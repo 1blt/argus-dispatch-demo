@@ -4,15 +4,15 @@
     "kind": "gap",
     "name": "discover-mode severity gate in isolation",
     "question": "Does argus fail a discover run on the severity gate alone, with no broken build involved?",
-    "why": "Blocked here, and argus CI does not cover it either. tests/dockerfiles/broken/Dockerfile is in every discover run, so any run that could observe the severity gate (allow_failure=false) has already failed on the build gate. Needs a repo with no broken Dockerfile, or a search_paths input on container-scan.yml's discover step. Remote-mode C3-C6 walk the severity ladder instead.",
+    "why": "Blocked on argus. tests/dockerfiles/broken/Dockerfile is in every discover run, so any run that could observe the severity gate (allow_failure=false) has already failed on the build gate. Closing this needs a search_paths input on container-scan.yml's discover step, mirroring the containers.search_paths key argus.yml already supports. Remote-mode C3-C6 walk the severity ladder in the meantime.",
     "ref": "test-discover.yml"
   },
   {
     "id": "GAP-2",
     "kind": "gap",
     "name": "finding counts and per-scanner status from a caller",
-    "question": "Can a caller of container-scan.yml see how many vulnerabilities were found, or which scanner found them?",
-    "why": "Not observable. container-scan.yml declares no workflow_call outputs, so a consumer only sees the job result. The scanner-container action does expose counts and argus CI asserts on them, so the logic is covered; what is untested is the reusable-workflow contract. E12 works around it by downloading the scan artifact. Asking argus for workflow_call outputs would close this properly.",
+    "question": "Can a caller of container-scan.yml read finding counts or per-scanner status from the workflow itself?",
+    "why": "Narrowed, not closed. E12 downloads the scan artifact and asserts on its content, so the information is reachable; what is still missing is a contract. container-scan.yml declares no workflow_call outputs, so every consumer has to scrape an artifact to learn anything beyond pass/fail. Closing this needs argus to publish outputs (total, critical, high, per-scanner status) on the reusable workflow, as the scanner-container action already does.",
     "ref": "test-edge.yml E12"
   },
   {
@@ -20,7 +20,7 @@
     "kind": "gap",
     "name": "exit code for an unscannable image",
     "question": "Does argus exit non-zero when an image cannot be pulled and nothing could be scanned?",
-    "why": "Deliberately untested because argus states no contract. container-scan.yml does not pass --fail-on-scanner-error and fail_on_severity is none, so whether a total scan failure is fatal is undefined. R9 accepts both outcomes; tighten it once argus decides.",
+    "why": "Blocked on a decision in argus. container-scan.yml does not pass --fail-on-scanner-error and fail_on_severity is none, so whether a scan that could not run anything exits non-zero is undefined. R9 accepts both outcomes rather than inventing a contract. E5 and W4 probe the same question from the scanner-selection and orchestration sides. Closing this needs argus to state the behaviour; the test then asserts it.",
     "ref": "test-remote.yml R9"
   },
   {
@@ -28,7 +28,7 @@
     "kind": "gap",
     "name": "private registry authentication success path",
     "question": "Does argus successfully pull and scan an image from a private registry using real credentials?",
-    "why": "Only the failure path is tested. E8 covers registry_username set with the registry_password secret missing. A successful private pull needs real credentials in repository secrets, which this suite deliberately does not hold.",
+    "why": "Blocked on credentials. E8 covers the documented failure path (registry_username set, registry_password missing). The success path needs a private image this repo can reach and a token in repository secrets. Using GHCR with the built-in GITHUB_TOKEN would work, but only against a package whose name and visibility are confirmed -- guessing one would make the test fail for a reason unrelated to argus.",
     "ref": "test-edge.yml E8"
   },
   {
@@ -36,39 +36,15 @@
     "kind": "gap",
     "name": "GHES runtime behaviour",
     "question": "Does argus actually run correctly on GitHub Enterprise Server?",
-    "why": "Only statically checked. U5 and I2 grep the action scripts for hardcoded github.com URLs. Nothing executes against a real GHES instance, and the composite-action path GHES users are told to take is not exercised end to end.",
+    "why": "Blocked on infrastructure. U5 and I2 grep the action scripts for hardcoded github.com URLs, which is a static check. Nothing executes against a real GHES instance, and the composite-action path GHES users are told to take is not exercised end to end. Closing this needs a GHES runner.",
     "ref": "test-unit.yml U5"
-  },
-  {
-    "id": "GAP-6",
-    "kind": "gap",
-    "name": "multi-arch and non-amd64 images",
-    "question": "Does argus scan an arm64 or multi-architecture image correctly from an amd64 runner?",
-    "why": "Not covered anywhere. Every image in this suite is pulled for the runner's native amd64 architecture. Platform selection, manifest-list handling and emulation are untested.",
-    "ref": null
-  },
-  {
-    "id": "GAP-7",
-    "kind": "gap",
-    "name": "SARIF size limits",
-    "question": "Does argus handle a SARIF upload that exceeds GitHub's size or result-count limits?",
-    "why": "Not covered. E11 tests the empty-SARIF end only. GitHub rejects SARIF over 10MB or 25000 results, which a full trivy+grype scan of a very vulnerable image can approach.",
-    "ref": "test-edge.yml E11"
   },
   {
     "id": "GAP-8",
     "kind": "gap",
     "name": "pull request comment rendering from a consumer",
     "question": "Does a consumer of container-scan.yml get a correctly formatted pull request comment?",
-    "why": "Partly covered upstream. argus CI tests the security-summary action that renders and posts the comment, but no test here runs container-scan.yml in a pull_request context, so the end-to-end path including comment_marker dedup and comment updating is unexercised from a caller's side.",
-    "ref": null
-  },
-  {
-    "id": "GAP-9",
-    "kind": "untested",
-    "name": "top-level security-scan and hardening workflows",
-    "question": "Does security-scan.yml or reusable-security-hardening.yml work end to end?",
-    "why": "Genuinely untested, here and upstream. reusable-security-hardening.yml is referenced only by security-reusable-demo.yml, which is workflow_dispatch-only and therefore never runs automatically. No test workflow in argus invokes it, and this suite covers container-scan.yml, infrastructure-scan.yml and container-scan-from-config.yml only. This is the orchestration layer most consumers would actually call.",
+    "why": "Blocked on a trigger. argus CI tests the security-summary action that renders and posts the comment, but no test here runs container-scan.yml in a pull_request context, so comment_marker dedup and comment updating are unexercised from a caller's side. Closing this needs a pull_request trigger on test-suite.yml plus a job that reads the PR's comments back and asserts the marker is present -- a change to when this suite runs, not just what it asserts.",
     "ref": null
   },
   {

@@ -201,7 +201,7 @@ flowchart TD
     SUM5 -->|no| SUM7["step summary only"]
 ```
 
-## Test Matrix (81 tests)
+## Test Matrix (87 tests)
 
 ### Reading the expectations
 
@@ -353,7 +353,28 @@ download it and assert on content. That block is what would let C10–C13 assert
 something real. Asking argus for `workflow_call` outputs (counts, per-scanner
 status) would remove the need for it.
 
-### SCN Detector Tests — `test-scn-detector.yml` (on-demand only)
+### Top-level Workflow Tests — `test-workflows.yml`
+
+`reusable-security-hardening.yml` is argus's consumer-facing orchestration
+layer, and nothing exercised it &mdash; not this suite, and not argus's own CI,
+because its only caller is a `workflow_dispatch`-only demo. These four tests
+close that. They assert the orchestration (does a `scanners` selection resolve
+into the right jobs, do they run, does the summary stitch them), not the
+scanners underneath, which argus CI already covers. All run with
+`allow_failure: true` so findings cannot decide the outcome.
+
+| # | Selection | Asserts |
+|---|-----------|---------|
+| W1 | `trivy-iac` against `tests/iac` | a single-scanner selection resolves and runs |
+| W2 | `lint` | a different scanner family resolves through the same coordinator |
+| W3 | `gitleaks,trivy-iac` | fan-out plus summary stitching for a multi-scanner selection |
+| W4 | `bogusscanner` | an unrecognised name finishes cleanly rather than crashing |
+
+`security-scan.yml` is deliberately **not** tested: it declares only
+push/schedule/dispatch, so it is argus scanning itself rather than anything a
+consumer can call.
+
+### SCN Detector Tests — `test-scn-detector.yml`
 
 Validates the [argus scn-detector](https://github.com/huntridge-labs/argus) action — classifies IaC changes into FedRAMP SCN categories. Run with `scope=scn`.
 
@@ -402,6 +423,7 @@ gh workflow run test-suite.yml -f scope=discover
 gh workflow run test-suite.yml -f scope=actions
 gh workflow run test-suite.yml -f scope=combination
 gh workflow run test-suite.yml -f scope=edge
+gh workflow run test-suite.yml -f scope=workflows
 gh workflow run test-suite.yml -f scope=scn
 
 # Test an argus feature branch

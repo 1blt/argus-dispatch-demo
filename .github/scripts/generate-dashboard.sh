@@ -9,7 +9,7 @@
 #   RUN_ID        — github.run_id
 #   REPO          — owner/repo
 #   PAGES_DIR     — directory to write output files into
-#   UNIT_JSON, ACTIONS_JSON, REMOTE_JSON, DISCOVER_JSON, COMBO_JSON, EDGE_JSON, SCN_JSON, REGRESSION_JSON
+#   UNIT_JSON, ACTIONS_JSON, REMOTE_JSON, DISCOVER_JSON, COMBO_JSON, EDGE_JSON, WF_JSON, SCN_JSON, REGRESSION_JSON
 #   UNIT_RESULT, ACTIONS_RESULT, REMOTE_RESULT, DISCOVER_RESULT, COMBO_RESULT, EDGE_RESULT, SCN_RESULT, I1_RESULT, I2_RESULT, I3_RESULT
 #   ARGUS_REPO — upstream repo (e.g., huntridge-labs/argus)
 #   ARGUS_REF  — branch/tag being tested (e.g., main)
@@ -35,6 +35,7 @@ REMOTE_JSON=$(safe_json "${REMOTE_JSON:-}")
 DISCOVER_JSON=$(safe_json "${DISCOVER_JSON:-}")
 COMBO_JSON=$(safe_json "${COMBO_JSON:-}")
 EDGE_JSON=$(safe_json "${EDGE_JSON:-}")
+WF_JSON=$(safe_json "${WF_JSON:-}")
 SCN_JSON=$(safe_json "${SCN_JSON:-}")
 REGRESSION_JSON=$(safe_json "${REGRESSION_JSON:-}")
 ALL_JSON=$(safe_json "${ALL_JSON:-}")
@@ -94,6 +95,7 @@ REMOTE_RESULT="${REMOTE_RESULT:-skipped}"
 DISCOVER_RESULT="${DISCOVER_RESULT:-skipped}"
 COMBO_RESULT="${COMBO_RESULT:-skipped}"
 EDGE_RESULT="${EDGE_RESULT:-skipped}"
+WF_RESULT="${WF_RESULT:-skipped}"
 SCN_RESULT="${SCN_RESULT:-skipped}"
 I1_RESULT="${I1_RESULT:-skipped}"
 I2_RESULT="${I2_RESULT:-skipped}"
@@ -107,6 +109,7 @@ CATEGORIES=$(jq -n -c \
   --arg ds "$(cat_status "$DISCOVER_RESULT")" \
   --arg cs "$(cat_status "$COMBO_RESULT")" \
   --arg es "$(cat_status "$EDGE_RESULT")" \
+  --arg ws "$(cat_status "$WF_RESULT")" \
   --arg ss "$(cat_status "$SCN_RESULT")" \
   --arg i1s "$(cat_status "$I1_RESULT")" \
   --arg i2s "$(cat_status "$I2_RESULT")" \
@@ -117,6 +120,7 @@ CATEGORIES=$(jq -n -c \
   --argjson d "$DISCOVER_JSON" \
   --argjson co "$COMBO_JSON" \
   --argjson ed "$EDGE_JSON" \
+  --argjson wf "$WF_JSON" \
   --argjson sc "$SCN_JSON" \
   --argjson ig "$REGRESSION_JSON" \
   '[
@@ -125,7 +129,8 @@ CATEGORIES=$(jq -n -c \
     {name:"Remote Mode Tests (R1–R12)", status:$rs, tests:$r},
     {name:"Discover Mode Tests (D1–D4)",status:$ds, tests:$d},
     {name:"Combination Tests (C1–C15)", status:$cs, tests:$co},
-    {name:"Edge & Adversarial (E1–E12)", status:$es, tests:$ed},
+    {name:"Edge & Adversarial (E1–E14)", status:$es, tests:$ed},
+    {name:"Top-level Workflow Tests (W1–W4)", status:$ws, tests:$wf},
     {name:"SCN Detector Tests (S1–S25)",status:$ss, tests:$sc},
     {name:"Infrastructure Scan (I1)",   status:$i1s,tests:[$ig[0]]},
     {name:"No Hardcoded URLs (I2)",     status:$i2s,tests:[$ig[1]]},
@@ -148,7 +153,8 @@ category_for() {
     test-remote)          echo "Remote Mode Tests (R1–R12)" ;;
     test-discover)        echo "Discover Mode Tests (D1–D4)" ;;
     test-combination)     echo "Combination Tests (C1–C15)" ;;
-    test-edge)            echo "Edge & Adversarial (E1–E12)" ;;
+    test-edge)            echo "Edge & Adversarial (E1–E14)" ;;
+    test-workflows)       echo "Top-level Workflow Tests (W1–W4)" ;;
     test-scn-detector)    echo "SCN Detector Tests (S1–S25)" ;;
     test-suite)           echo "Regression Tests (I1–I3)" ;;
     *)                    echo "Other" ;;
@@ -165,7 +171,7 @@ scope_for() {
 }
 
 CATALOG_JSON='[]'
-for wf in test-unit test-actions-direct test-remote test-discover test-combination test-edge test-scn-detector test-suite; do
+for wf in test-unit test-actions-direct test-remote test-discover test-combination test-edge test-workflows test-scn-detector test-suite; do
   f="$WF_DIR/$wf.yml"
   [ -f "$f" ] || continue
   # Pull the jq array literal the collect step builds, and blank out the shell

@@ -295,6 +295,47 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
+  # E13: foreign-architecture image
+  #
+  # Every other image in the suite is pulled for the runner's native amd64.
+  # arm64v8/alpine is arm64-only, so this exercises manifest selection and the
+  # scanners' ability to inspect layers they cannot execute. Expected to pass:
+  # trivy and grype read the filesystem rather than running the binaries, so a
+  # foreign architecture should be scannable. If it fails, that IS the finding
+  # -- consumers building multi-arch images would be scanning nothing.
+  # --------------------------------------------------------------------------
+  e13-foreign-arch:
+    name: "E13: foreign-architecture image"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: arm64v8/alpine:3.18
+      container_name: e13-arm64-alpine
+      scanners: trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E14: SARIF at scale
+  #
+  # E11 covers the empty end of the SARIF path. This covers the other end: the
+  # most vulnerable image in the suite with all three scanners and code security
+  # on, which is where GitHub's SARIF limits (10MB, 25000 results) bite. A
+  # consumer scanning a legacy base image hits this, not the empty case.
+  # --------------------------------------------------------------------------
+  e14-sarif-at-scale:
+    name: "E14: SARIF upload at scale"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: nginx:1.19.0
+      container_name: e14-sarif-scale
+      scanners: trivy,grype
+      fail_on_severity: none
+      enable_code_security: true
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
   # E12: Artifact-level assertion (the pattern, not just one test)
   #
   # Everything else in this repo asserts a job result, because container-scan.yml
@@ -383,6 +424,8 @@ jobs:
       - e10-packageless-image
       - e11-sarif-empty
       - e12-artifact-assertion
+      - e13-foreign-arch
+      - e14-sarif-at-scale
     if: always()
     steps:
       - name: Validate test outcomes
@@ -399,6 +442,8 @@ jobs:
           E10: ${{ needs.e10-packageless-image.result }}
           E11: ${{ needs.e11-sarif-empty.result }}
           E12: ${{ needs.e12-artifact-assertion.result }}
+          E13: ${{ needs.e13-foreign-arch.result }}
+          E14: ${{ needs.e14-sarif-at-scale.result }}
         run: |
           FAILURES=0
 
@@ -434,6 +479,8 @@ jobs:
           check "E10 packageless image" "$E10" "success"
           check "E11 SARIF upload, zero findings" "$E11" "success"
           check "E12 scan artifact content" "$E12" "success"
+          check "E13 foreign-architecture image" "$E13" "success"
+          check "E14 SARIF upload at scale" "$E14" "success"
           echo ""
 
           echo "-- POLICY: silent-pass holes (a red here is an argus question) --"
@@ -442,7 +489,7 @@ jobs:
 
           echo ""
           echo "============================================"
-          TOTAL=12
+          TOTAL=14
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -468,6 +515,8 @@ jobs:
           E10: ${{ needs.e10-packageless-image.result }}
           E11: ${{ needs.e11-sarif-empty.result }}
           E12: ${{ needs.e12-artifact-assertion.result }}
+          E13: ${{ needs.e13-foreign-arch.result }}
+          E14: ${{ needs.e14-sarif-at-scale.result }}
         run: |
           to_status() {
             local got="$1" expected="$2"
@@ -496,6 +545,8 @@ jobs:
             --arg e10 "$(to_status "$E10" success)" \
             --arg e11 "$(to_status "$E11" success)" \
             --arg e12 "$(to_status "$E12" success)" \
+            --arg e13 "$(to_status "$E13" success)" \
+            --arg e14 "$(to_status "$E14" success)" \
             '[
               {"id":"E1","name":"digest-pinned image","detail":"Does argus scan an image that is referenced by digest rather than by tag?","status":$e1},
               {"id":"E2","name":"fully-qualified host","detail":"Does argus scan an image that is referenced by a fully-qualified registry host?","status":$e2},
