@@ -820,9 +820,22 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   // makes the Logs column land on the job instead of repeating the run URL.
   // Best-effort: if the jobs API was unavailable, rows fall back to the run.
   const jobUrl = {};
+  // A single test spawns several jobs -- discover, scan, summary -- and the
+  // first one encountered is often a SKIPPED job whose log is empty. Rank the
+  // candidates so a failed job wins, then a job that ran, and only then a
+  // skipped one, and deep-link to the failing step rather than the job top.
+  const JOB_RANK = { failure: 3, success: 2, cancelled: 1 };
   (d.jobs || []).forEach(function (j) {
     const m = String(j.name || '').match(/(?:^|\/)\s*([A-Z]+\d+[a-z]?)\s*:/);
-    if (m && !jobUrl[m[1]]) jobUrl[m[1]] = j.url;
+    if (!m) return;
+    const id = m[1];
+    const rank = JOB_RANK[j.conclusion] || 0;
+    const cur = jobUrl[id];
+    if (cur && rank <= cur.rank) return;
+    jobUrl[id] = {
+      rank: rank,
+      url: j.url + (j.conclusion === 'failure' && j.failedStep ? '#step:' + j.failedStep + ':1' : '')
+    };
   });
 
   const tests = docs.filter(function (x) { return x.kind === 'test'; });
@@ -1336,7 +1349,8 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       : '<span class="none">&mdash;</span>';
     const ran = x.kind === 'test' && (x.status === 'pass' || x.status === 'FAIL');
     const logCell = ran
-      ? '<a href="' + (jobUrl[x.id] || d.runUrl) + '" title="Job logs for ' + esc(x.id) + '">log &#8599;</a>'
+      ? '<a href="' + ((jobUrl[x.id] && jobUrl[x.id].url) || d.runUrl) +
+        '" title="' + (jobUrl[x.id] ? 'Log for the job that ran ' + esc(x.id) : 'Run logs') + '">log &#8599;</a>'
       : '<span class="none">&mdash;</span>';
     tr.innerHTML =
       '<td class="c-st"><span class="dot ' + dotClass(x) + '" title="' + esc(statusTitle(x)) + '"></span></td>' +

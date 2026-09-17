@@ -564,15 +564,24 @@ jobs:
           echo "History entries loaded for $BRANCH: $(jq 'length' "_site/$BRANCH/history.json")"
 
       # Per-job log URLs so the dashboard's Logs column points at the job that ran
-      # each test rather than repeating the run URL on every row. Best effort:
-      # if this fails the dashboard falls back to the run URL.
+      # each test rather than repeating the run URL on every row. conclusion and
+      # the first failed step come too: a test spawns several jobs (discover,
+      # scan, summary) and the useful log is the one that failed, at the step
+      # that failed, not whichever the API happened to list first -- which is
+      # often a skipped job with an empty log. Best effort: if this fails the
+      # dashboard falls back to the run URL.
       - name: Map test jobs to their logs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           JOBS=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-            --paginate --jq '.jobs[] | {name: .name, url: .html_url}' 2>/dev/null \
+            --paginate --jq '.jobs[] | {
+              name: .name,
+              url: .html_url,
+              conclusion: .conclusion,
+              failedStep: ([.steps[]? | select(.conclusion == "failure") | .number] | first)
+            }' 2>/dev/null \
             | jq -s -c '.' 2>/dev/null) || JOBS='[]'
           [ -n "$JOBS" ] || JOBS='[]'
           echo "Mapped $(echo "$JOBS" | jq 'length') job(s) to log URLs"
