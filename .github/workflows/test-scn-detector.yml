@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
 
   workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: 'Key for S25, which exercises the AI fallback path. Without it S25 is skipped rather than failing.'
+        required: false
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -35,6 +39,29 @@ permissions:
 # ============================================================================
 
 jobs:
+  # S25 is the only test here that reaches an external API. Probe for the key in
+  # its own job so S25 can be skipped cleanly when it is absent, instead of
+  # failing and making a missing secret look like a detector regression.
+  ai-key-check:
+    name: "AI key availability"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - name: Check for an AI key
+        id: check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "AI key present - S25 will run"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ANTHROPIC_API_KEY - S25 (AI fallback) will be skipped"
+          fi
+
   # --------------------------------------------------------------------------
   # S1: Routine — tag changes (single commit)
   # Rule: pattern 'tags.*' matches any operation
@@ -1550,6 +1577,8 @@ jobs:
     name: "S25: AI fallback classification"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: ai-key-check
+    if: needs.ai-key-check.outputs.present == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1818,30 +1847,30 @@ jobs:
             --arg s24 "$(to_status "$S24" success)" \
             --arg s25 "$(to_status "$S25" success)" \
             '[
-              {"id":"S1","name":"routine tags","detail":"Terraform tags.* pattern — ROUTINE classification","status":$s1},
-              {"id":"S2","name":"routine description","detail":"Terraform description pattern — ROUTINE classification","status":$s2},
-              {"id":"S3","name":"adaptive instance type","detail":"aws_instance instance_type modify — ADAPTIVE classification","status":$s3},
-              {"id":"S4","name":"adaptive IAM attachment","detail":"aws_iam_policy_attachment create — ADAPTIVE classification","status":$s4},
-              {"id":"S5","name":"transformative IAM role","detail":"aws_iam_role create — TRANSFORMATIVE classification","status":$s5},
-              {"id":"S6","name":"transformative DB engine","detail":"aws_rds_cluster engine modify — TRANSFORMATIVE classification","status":$s6},
-              {"id":"S7","name":"impact encryption","detail":"S3 encryption removal — IMPACT classification","status":$s7},
-              {"id":"S8","name":"impact public SG","detail":"Security group 0.0.0.0/0 ingress — IMPACT classification","status":$s8},
-              {"id":"S9","name":"impact IAM user","detail":"aws_iam_user create — IMPACT classification","status":$s9},
-              {"id":"S10","name":"kubernetes detection","detail":"K8s Deployment YAML — IaC format detection","status":$s10},
-              {"id":"S11","name":"cloudformation detection","detail":"CFN template YAML — IaC format detection","status":$s11},
-              {"id":"S12","name":"no IaC changes","detail":"Non-IaC file — has_changes=false","status":$s12},
-              {"id":"S13","name":"fail on impact","detail":"fail_on_category=impact — enforcement","status":$s13},
-              {"id":"S14","name":"fail on adaptive","detail":"fail_on_category=adaptive — enforcement","status":$s14},
-              {"id":"S15","name":"mixed multi-category","detail":"Routine + Impact files — highest category wins","status":$s15},
-              {"id":"S16","name":"dry-run issues","detail":"Dry-run mode — issue payloads without API calls","status":$s16},
-              {"id":"S17","name":"manual review","detail":"Unmatched resource — MANUAL_REVIEW classification","status":$s17},
-              {"id":"S18","name":"fail on transformative","detail":"fail_on_category=transformative — enforcement","status":$s18},
-              {"id":"S19","name":"fail on category pass","detail":"fail_on_category=adaptive with ROUTINE — no failure","status":$s19},
-              {"id":"S20","name":"delete operation","detail":"aws_kms_key file deletion — IMPACT classification","status":$s20},
-              {"id":"S21","name":"k8s classification","detail":"K8s version annotation — ADAPTIVE classification","status":$s21},
-              {"id":"S22","name":"cfn classification","detail":"CFN S3 bucket tags — ROUTINE classification","status":$s22},
-              {"id":"S23","name":"custom config","detail":"Custom config_file — overrides default profile","status":$s23},
-              {"id":"S24","name":"single-file multi-resource","detail":"Two resources in one .tf — per-resource extraction","status":$s24},
-              {"id":"S25","name":"AI fallback","detail":"Unmatched resource — AI classification instead of MANUAL_REVIEW","status":$s25}
+              {"id":"S1","name":"routine tags","detail":"Does the SCN detector classify a Terraform tags change as ROUTINE?","status":$s1},
+              {"id":"S2","name":"routine description","detail":"Does the SCN detector classify a Terraform description change as ROUTINE?","status":$s2},
+              {"id":"S3","name":"adaptive instance type","detail":"Does the SCN detector classify an aws_instance instance_type modification as ADAPTIVE?","status":$s3},
+              {"id":"S4","name":"adaptive IAM attachment","detail":"Does the SCN detector classify creating an aws_iam_policy_attachment as ADAPTIVE?","status":$s4},
+              {"id":"S5","name":"transformative IAM role","detail":"Does the SCN detector classify creating an aws_iam_role as TRANSFORMATIVE?","status":$s5},
+              {"id":"S6","name":"transformative DB engine","detail":"Does the SCN detector classify modifying an aws_rds_cluster engine as TRANSFORMATIVE?","status":$s6},
+              {"id":"S7","name":"impact encryption","detail":"Does the SCN detector classify removing S3 encryption as IMPACT?","status":$s7},
+              {"id":"S8","name":"impact public SG","detail":"Does the SCN detector classify a security group that opens 0.0.0.0/0 ingress as IMPACT?","status":$s8},
+              {"id":"S9","name":"impact IAM user","detail":"Does the SCN detector classify creating an aws_iam_user as IMPACT?","status":$s9},
+              {"id":"S10","name":"kubernetes detection","detail":"Does the SCN detector recognise a Kubernetes Deployment YAML as IaC?","status":$s10},
+              {"id":"S11","name":"cloudformation detection","detail":"Does the SCN detector recognise a CloudFormation template YAML as IaC?","status":$s11},
+              {"id":"S12","name":"no IaC changes","detail":"Does the SCN detector report has_changes=false when the changed file is not IaC?","status":$s12},
+              {"id":"S13","name":"fail on impact","detail":"Does the SCN detector fail the run when fail_on_category is impact and an IMPACT change is present?","status":$s13},
+              {"id":"S14","name":"fail on adaptive","detail":"Does the SCN detector fail the run when fail_on_category is adaptive and an ADAPTIVE change is present?","status":$s14},
+              {"id":"S15","name":"mixed multi-category","detail":"Does the SCN detector report the highest category when routine and impact changes arrive together?","status":$s15},
+              {"id":"S16","name":"dry-run issues","detail":"Does the SCN detector build issue payloads without calling the API when dry_run is set?","status":$s16},
+              {"id":"S17","name":"manual review","detail":"Does the SCN detector classify a resource no rule matches as MANUAL_REVIEW?","status":$s17},
+              {"id":"S18","name":"fail on transformative","detail":"Does the SCN detector fail the run when fail_on_category is transformative and a TRANSFORMATIVE change is present?","status":$s18},
+              {"id":"S19","name":"fail on category pass","detail":"Does the SCN detector let the run pass when fail_on_category is adaptive but the change is only ROUTINE?","status":$s19},
+              {"id":"S20","name":"delete operation","detail":"Does the SCN detector classify deleting an aws_kms_key file as IMPACT?","status":$s20},
+              {"id":"S21","name":"k8s classification","detail":"Does the SCN detector classify a Kubernetes version annotation change as ADAPTIVE?","status":$s21},
+              {"id":"S22","name":"cfn classification","detail":"Does the SCN detector classify a CloudFormation S3 bucket tag change as ROUTINE?","status":$s22},
+              {"id":"S23","name":"custom config","detail":"Does the SCN detector apply a custom config_file in place of the default profile?","status":$s23},
+              {"id":"S24","name":"single-file multi-resource","detail":"Does the SCN detector extract both resources when one .tf file declares two?","status":$s24},
+              {"id":"S25","name":"AI fallback","detail":"Does the SCN detector fall back to AI classification instead of MANUAL_REVIEW for an unmatched resource?","status":$s25}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

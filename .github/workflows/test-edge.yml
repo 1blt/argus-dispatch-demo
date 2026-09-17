@@ -1,0 +1,513 @@
+name: "Edge & Adversarial Tests"
+
+on:
+  workflow_call:
+    outputs:
+      results:
+        description: "JSON array of individual test results"
+        value: ${{ jobs.validate-results.outputs.results }}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  packages: read
+  pull-requests: write
+
+# ============================================================================
+# Edge & adversarial tests (E1-E12)
+#
+# R/D/C cover the parameter space a caller is *meant* to use. This suite covers
+# the inputs a caller actually sends by accident, and the paths where argus can
+# return a green check without having scanned anything.
+#
+# Three kinds of test live here, and they are labelled in the results so a red
+# cell is interpretable:
+#
+#   CONTRACT    Documented behaviour. A red means argus regressed.
+#               E1, E2, E3, E4, E6, E7, E8, E10, E11, E12
+#
+#   POLICY      argus has no stated contract; this asserts the security-correct
+#               outcome. A red is an open question for argus, not a broken
+#               test — resolve it in argus or restate the expectation here.
+#               Deliberately NOT written as "accept either outcome": a test
+#               that passes both ways tells you nothing.
+#               E5, E9
+#
+#   See test-remote.yml for the DIRTY / CLEAN / UNKNOWN determinism anchors.
+#   Most tests here use CLEAN (gcr.io/distroless/static-debian12) so the
+#   severity gate can never be the thing that fails them — the input under
+#   test is the only variable.
+# ============================================================================
+
+jobs:
+  # --------------------------------------------------------------------------
+  # E1: Digest-pinned image reference
+  #
+  # Hardened pipelines pin by digest, not tag. The whole suite otherwise passes
+  # tags, so `image@sha256:...` parsing is untested. The digest is resolved at
+  # runtime rather than hardcoded so the test cannot rot into scanning some
+  # other image.
+  # --------------------------------------------------------------------------
+  e1-resolve-digest:
+    name: "E1a: resolve digest"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+    steps:
+      - name: Resolve nginx:1.19.0 to a digest
+        id: resolve
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sSf \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/nginx:pull" \
+            | jq -r .token)
+
+          DIGEST=$(curl -sSf -I \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://registry-1.docker.io/v2/library/nginx/manifests/1.19.0" \
+            | tr -d '\r' \
+            | awk 'tolower($1) == "docker-content-digest:" {print $2}')
+
+          if [ -z "$DIGEST" ]; then
+            echo "::error::Could not resolve a digest for nginx:1.19.0"
+            exit 1
+          fi
+
+          echo "Resolved nginx:1.19.0 -> $DIGEST"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  e1-digest-pinned:
+    name: "E1: digest-pinned image"
+    needs: e1-resolve-digest
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: nginx@${{ needs.e1-resolve-digest.outputs.digest }}
+      container_name: e1-digest-pinned
+      scanners: trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E2: Fully-qualified registry host
+  #
+  # Every other test uses the short form (alpine:3.18). The remote job derives
+  # the registry for `docker login` with `cut -d'/' -f1` plus a "does it contain
+  # a dot or colon" heuristic, so short vs fully-qualified take different code
+  # paths. Also the source image for E12's artifact assertion.
+  # --------------------------------------------------------------------------
+  e2-fully-qualified:
+    name: "E2: fully-qualified registry host"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: docker.io/library/alpine:3.18
+      container_name: e2-fq-alpine
+      scanners: trivy,grype
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E3: Whitespace in the scanners list
+  #
+  # argus normalises with [s.strip().lower() for s in raw.split(",") if s.strip()]
+  # (argus/scanners/container.py:423). A human editing a workflow writes
+  # "trivy, grype". This pins that the normalisation stays.
+  # --------------------------------------------------------------------------
+  e3-scanner-whitespace:
+    name: "E3: whitespace in scanners"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e3-whitespace
+      scanners: "  trivy , grype  "
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E4: Duplicate and mixed-case scanner names
+  #
+  # Same normaliser, other half: .lower() plus membership tests mean a scanner
+  # named three times must still run once and not error.
+  # --------------------------------------------------------------------------
+  e4-scanner-duplicates:
+    name: "E4: duplicate + mixed-case scanners"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e4-duplicates
+      scanners: trivy,TRIVY,Trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E5: POLICY — no valid scanner selected
+  #
+  # argus dispatches on `if "trivy" in enabled` / `"grype"` / `"syft"` and only
+  # notices a problem at the end, via `if not metadata: metadata["error"] = ...`
+  # (argus/scanners/container.py:356-361). container-scan.yml does not pass
+  # --fail-on-scanner-error, and fail_on_severity is none here, so nothing
+  # obviously converts that error into a non-zero exit.
+  #
+  # Expected: failure. A scan where no scanner ran must not report green.
+  # If this goes red, argus is reporting "clean" for an image it never looked
+  # at — decide it in argus, then update this expectation to match.
+  # --------------------------------------------------------------------------
+  e5-no-valid-scanner:
+    name: "E5: no valid scanner (policy)"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e5-no-valid-scanner
+      scanners: bogusscanner
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E6: One good scanner, one typo
+  #
+  # The realistic version of E5: "trivy,gryp3". The unknown name is dropped
+  # silently and trivy still runs, so the workflow succeeds — that is the
+  # contract being pinned. E12's artifact assertion is what would show whether
+  # the surviving scanner actually produced a report.
+  # --------------------------------------------------------------------------
+  e6-partial-typo:
+    name: "E6: valid + typo'd scanner"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e6-partial-typo
+      scanners: trivy,bogusscanner
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E7: container_name needing sanitisation
+  #
+  # The name flows into an artifact name via
+  #   tr '/' '-' | tr -cd '[:alnum:]._-'
+  # and GitHub rejects artifact names containing '/'. "Edge/Case Name" exercises
+  # slash, space and capitals in one go.
+  # --------------------------------------------------------------------------
+  e7-name-sanitisation:
+    name: "E7: container_name sanitisation"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: "Edge/Case Name"
+      scanners: trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E8: registry_username without registry_password -> MUST FAIL
+  #
+  # container-scan.yml has an explicit guard:
+  #   if [ -z "$REGISTRY_PASSWORD" ]; then
+  #     echo "::error title=Missing Registry Password::..."; exit 1
+  #   fi
+  # Called with no secrets block at all, so the secret resolves empty. This is
+  # the one misconfiguration in the suite with a documented error path, and
+  # 'failure' is the passing outcome.
+  # --------------------------------------------------------------------------
+  e8-auth-missing-password:
+    name: "E8: registry auth without password"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e8-auth-no-password
+      registry_username: notarealuser
+      scanners: trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E9: POLICY — remote mode with an empty image_ref
+  #
+  # scan-remote-image is gated on
+  #   if: inputs.scan_mode == 'remote' && inputs.image_ref != ''
+  # and discover-containers on `inputs.scan_mode != 'remote'`, so BOTH scan
+  # jobs skip. Only container-scan-summary runs, with scan_statuses of
+  # "skipped".
+  #
+  # Expected: failure. "You asked for a remote scan, nothing was scanned, here
+  # is a green check" is the same silent-pass class the build gate (D4) was
+  # added to close — an empty image_ref is usually an unset variable upstream.
+  # If this goes red, argus is treating skipped-everything as success.
+  # --------------------------------------------------------------------------
+  e9-empty-image-ref:
+    name: "E9: empty image_ref (policy)"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: ""
+      container_name: e9-empty-image-ref
+      scanners: trivy
+      fail_on_severity: none
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E10: Image with no package manager database
+  #
+  # hello-world is a scratch image holding one binary: no OS, no package DB,
+  # nothing for trivy or grype to enumerate. Parsers that assume a populated
+  # result set break here rather than on a normal image. Strict threshold on
+  # purpose — zero findings means the gate must not fire either.
+  # --------------------------------------------------------------------------
+  e10-packageless-image:
+    name: "E10: packageless image"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: hello-world:latest
+      container_name: e10-packageless
+      scanners: trivy,grype
+      fail_on_severity: low
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E11: SARIF upload with zero findings
+  #
+  # enable_code_security is never exercised anywhere in the suite, and the
+  # empty-SARIF case is where upload-sarif historically breaks. CLEAN image, so
+  # the SARIF argus generates has no results at all.
+  # --------------------------------------------------------------------------
+  e11-sarif-empty:
+    name: "E11: SARIF upload, zero findings"
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: remote
+      image_ref: gcr.io/distroless/static-debian12:latest
+      container_name: e11-sarif-empty
+      scanners: trivy
+      fail_on_severity: none
+      enable_code_security: true
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # E12: Artifact-level assertion (the pattern, not just one test)
+  #
+  # Everything else in this repo asserts a job result, because container-scan.yml
+  # declares no workflow_call outputs. A green result only proves the workflow
+  # completed — not that a scanner ran, or that it looked at the right image.
+  #
+  # The reusable workflow uploads scanner-summary-container-<safe_name> into
+  # THIS run, so a caller-side job can download it and assert on content. That
+  # is the difference between "the workflow was green" and "the scan happened".
+  #
+  # Applied to E2 here; the same block is what would let C10-C13 assert
+  # something real despite running under allow_failure=true.
+  # --------------------------------------------------------------------------
+  e12-artifact-assertion:
+    name: "E12: scan artifact content"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: e2-fully-qualified
+    if: always()
+    outputs:
+      status: ${{ steps.assert.outputs.status }}
+    steps:
+      - name: Download E2 container summary
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scanner-summary-container-e2-fq-alpine
+          path: ./e2-summary
+
+      - name: Assert the scan actually ran against the requested image
+        id: assert
+        run: |
+          set -uo pipefail
+          STATUS="pass"
+
+          fail() {
+            echo "::error::$1"
+            STATUS="FAIL"
+          }
+
+          if [ "${{ steps.download.outcome }}" != "success" ]; then
+            fail "E2 uploaded no scanner-summary-container-e2-fq-alpine artifact — the scan produced no report"
+          else
+            REPORT=$(find ./e2-summary -type f -name '*.md' | head -n 1)
+
+            if [ -z "$REPORT" ]; then
+              fail "Artifact downloaded but contains no markdown report"
+            elif [ ! -s "$REPORT" ]; then
+              fail "Report $REPORT is empty"
+            else
+              echo "Report: $REPORT ($(wc -c < "$REPORT") bytes)"
+              echo "----- report -----"
+              cat "$REPORT"
+              echo "------------------"
+
+              # The report embeds the image it scanned. If this stops matching,
+              # the workflow scanned something other than what it was asked to.
+              if ! grep -qi 'alpine' "$REPORT"; then
+                fail "Report does not mention the scanned image (alpine) — check whether the report format changed before loosening this"
+              fi
+            fi
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "pass" ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # Validation job
+  # --------------------------------------------------------------------------
+  validate-results:
+    name: "Validate Edge Test Results"
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.collect.outputs.results }}
+    needs:
+      - e1-digest-pinned
+      - e2-fully-qualified
+      - e3-scanner-whitespace
+      - e4-scanner-duplicates
+      - e5-no-valid-scanner
+      - e6-partial-typo
+      - e7-name-sanitisation
+      - e8-auth-missing-password
+      - e9-empty-image-ref
+      - e10-packageless-image
+      - e11-sarif-empty
+      - e12-artifact-assertion
+    if: always()
+    steps:
+      - name: Validate test outcomes
+        env:
+          E1: ${{ needs.e1-digest-pinned.result }}
+          E2: ${{ needs.e2-fully-qualified.result }}
+          E3: ${{ needs.e3-scanner-whitespace.result }}
+          E4: ${{ needs.e4-scanner-duplicates.result }}
+          E5: ${{ needs.e5-no-valid-scanner.result }}
+          E6: ${{ needs.e6-partial-typo.result }}
+          E7: ${{ needs.e7-name-sanitisation.result }}
+          E8: ${{ needs.e8-auth-missing-password.result }}
+          E9: ${{ needs.e9-empty-image-ref.result }}
+          E10: ${{ needs.e10-packageless-image.result }}
+          E11: ${{ needs.e11-sarif-empty.result }}
+          E12: ${{ needs.e12-artifact-assertion.result }}
+        run: |
+          FAILURES=0
+
+          check() {
+            local name="$1" got="$2" expected="$3"
+            if [ "$got" = "$expected" ]; then
+              echo "PASS $name: $got (expected $expected)"
+            else
+              echo "FAIL $name: $got (expected $expected)"
+              FAILURES=$((FAILURES + 1))
+            fi
+          }
+
+          echo "============================================"
+          echo "Edge & Adversarial Test Validation"
+          echo "============================================"
+          echo ""
+
+          echo "-- CONTRACT: input handling --"
+          check "E1  digest-pinned image" "$E1" "success"
+          check "E2  fully-qualified host" "$E2" "success"
+          check "E3  whitespace in scanners" "$E3" "success"
+          check "E4  duplicate scanners" "$E4" "success"
+          check "E6  valid + typo'd scanner" "$E6" "success"
+          check "E7  container_name sanitisation" "$E7" "success"
+          echo ""
+
+          echo "-- CONTRACT: documented failure path --"
+          check "E8  auth without password" "$E8" "failure"
+          echo ""
+
+          echo "-- CONTRACT: scanner robustness --"
+          check "E10 packageless image" "$E10" "success"
+          check "E11 SARIF upload, zero findings" "$E11" "success"
+          check "E12 scan artifact content" "$E12" "success"
+          echo ""
+
+          echo "-- POLICY: silent-pass holes (a red here is an argus question) --"
+          check "E5  no valid scanner" "$E5" "failure"
+          check "E9  empty image_ref" "$E9" "failure"
+
+          echo ""
+          echo "============================================"
+          TOTAL=12
+          PASSED=$((TOTAL - FAILURES))
+          echo "Results: $PASSED/$TOTAL passed"
+          echo "============================================"
+
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "::error::$FAILURES edge test(s) did not produce expected outcome"
+            exit 1
+          fi
+
+      - name: Build results JSON
+        id: collect
+        if: always()
+        env:
+          E1: ${{ needs.e1-digest-pinned.result }}
+          E2: ${{ needs.e2-fully-qualified.result }}
+          E3: ${{ needs.e3-scanner-whitespace.result }}
+          E4: ${{ needs.e4-scanner-duplicates.result }}
+          E5: ${{ needs.e5-no-valid-scanner.result }}
+          E6: ${{ needs.e6-partial-typo.result }}
+          E7: ${{ needs.e7-name-sanitisation.result }}
+          E8: ${{ needs.e8-auth-missing-password.result }}
+          E9: ${{ needs.e9-empty-image-ref.result }}
+          E10: ${{ needs.e10-packageless-image.result }}
+          E11: ${{ needs.e11-sarif-empty.result }}
+          E12: ${{ needs.e12-artifact-assertion.result }}
+        run: |
+          to_status() {
+            local got="$1" expected="$2"
+            case "$got" in
+              skipped) echo "skip" ;;
+              cancelled) echo "cancel" ;;
+              *)
+                if [ "$got" = "$expected" ]; then
+                  echo "pass"
+                else
+                  echo "FAIL"
+                fi
+                ;;
+            esac
+          }
+          RESULTS=$(jq -n -c \
+            --arg e1 "$(to_status "$E1" success)" \
+            --arg e2 "$(to_status "$E2" success)" \
+            --arg e3 "$(to_status "$E3" success)" \
+            --arg e4 "$(to_status "$E4" success)" \
+            --arg e5 "$(to_status "$E5" failure)" \
+            --arg e6 "$(to_status "$E6" success)" \
+            --arg e7 "$(to_status "$E7" success)" \
+            --arg e8 "$(to_status "$E8" failure)" \
+            --arg e9 "$(to_status "$E9" failure)" \
+            --arg e10 "$(to_status "$E10" success)" \
+            --arg e11 "$(to_status "$E11" success)" \
+            --arg e12 "$(to_status "$E12" success)" \
+            '[
+              {"id":"E1","name":"digest-pinned image","detail":"Does argus scan an image that is referenced by digest rather than by tag?","status":$e1},
+              {"id":"E2","name":"fully-qualified host","detail":"Does argus scan an image that is referenced by a fully-qualified registry host?","status":$e2},
+              {"id":"E3","name":"whitespace in scanners","detail":"Does argus accept a scanners list that is padded with spaces?","status":$e3},
+              {"id":"E4","name":"duplicate + mixed-case scanners","detail":"Does argus accept a scanners list that repeats one scanner in mixed case?","status":$e4},
+              {"id":"E5","name":"no valid scanner","detail":"Does argus fail the workflow when the scanners list names nothing it recognises, so no scanner runs?","status":$e5},
+              {"id":"E6","name":"valid plus unknown scanner","detail":"Does argus still run trivy when the scanners list also contains a name it does not recognise?","status":$e6},
+              {"id":"E7","name":"container_name sanitisation","detail":"Does argus complete a scan when container_name contains a slash, a space and capital letters?","status":$e7},
+              {"id":"E8","name":"auth without password","detail":"Does argus fail the workflow when registry_username is set but the registry_password secret is missing?","status":$e8},
+              {"id":"E9","name":"empty image_ref","detail":"Does argus fail the workflow when a remote scan is asked for with an empty image_ref, so every scan job skips?","status":$e9},
+              {"id":"E10","name":"packageless image","detail":"Does argus scan an image that has no package manager database without crashing?","status":$e10},
+              {"id":"E11","name":"SARIF upload, zero findings","detail":"Does argus upload SARIF successfully when the scan produced zero findings?","status":$e11},
+              {"id":"E12","name":"scan artifact content","detail":"Does the uploaded scan report show that the scan really ran against the image it was given?","status":$e12}
+            ]')
+          echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

@@ -17,6 +17,7 @@ on:
           - discover
           - actions
           - combination
+          - edge
           - regression
           - scn
         default: 'all'
@@ -96,12 +97,29 @@ jobs:
     uses: ./.github/workflows/test-combination.yml
 
   # ==========================================================================
-  # SCN Detector Tests (S1-S25) — on-demand only (scope=scn)
+  # Edge & Adversarial Tests (E1-E12)
+  # ==========================================================================
+  edge-tests:
+    name: "Edge & Adversarial Tests"
+    if: inputs.scope == 'all' || inputs.scope == 'edge' || github.event_name == 'schedule' || github.event_name == 'push'
+    uses: ./.github/workflows/test-edge.yml
+
+  # ==========================================================================
+  # SCN Detector Tests (S1-S25)
+  #
+  # Previously gated on `inputs.scope == 'scn'`, which excluded them from `all`,
+  # from push and from the weekly schedule -- so 25 of 81 tests (31% of the
+  # suite) only ever ran if somebody remembered to dispatch them by hand, and a
+  # detector regression could sit unnoticed indefinitely. 24 of the 25 need
+  # nothing but GITHUB_TOKEN; only S25 reaches an external API, and it now skips
+  # itself when the key is absent. They run with everything else.
   # ==========================================================================
   scn-tests:
     name: "SCN Detector Tests"
-    if: inputs.scope == 'scn'
+    if: inputs.scope == 'all' || inputs.scope == 'scn' || github.event_name == 'schedule' || github.event_name == 'push'
     uses: ./.github/workflows/test-scn-detector.yml
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
   # ==========================================================================
   # I1: Infrastructure scan regression
@@ -195,6 +213,7 @@ jobs:
       - remote-tests
       - discover-tests
       - combination-tests
+      - edge-tests
       - scn-tests
       - i1-infrastructure-scan
       - i2-no-hardcoded-urls
@@ -211,12 +230,14 @@ jobs:
           REMOTE_JSON: ${{ needs.remote-tests.outputs.results }}
           DISCOVER_JSON: ${{ needs.discover-tests.outputs.results }}
           COMBO_JSON: ${{ needs.combination-tests.outputs.results }}
+          EDGE_JSON: ${{ needs.edge-tests.outputs.results }}
           SCN_JSON: ${{ needs.scn-tests.outputs.results }}
           UNIT_RESULT: ${{ needs.unit-tests.result }}
           ACTIONS_RESULT: ${{ needs.action-tests.result }}
           REMOTE_RESULT: ${{ needs.remote-tests.result }}
           DISCOVER_RESULT: ${{ needs.discover-tests.result }}
           COMBO_RESULT: ${{ needs.combination-tests.result }}
+          EDGE_RESULT: ${{ needs.edge-tests.result }}
           SCN_RESULT: ${{ needs.scn-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
@@ -258,6 +279,7 @@ jobs:
           REMOTE_ARR=$(safe_json "$REMOTE_JSON")
           DISCOVER_ARR=$(safe_json "$DISCOVER_JSON")
           COMBO_ARR=$(safe_json "$COMBO_JSON")
+          EDGE_ARR=$(safe_json "$EDGE_JSON")
           SCN_ARR=$(safe_json "$SCN_JSON")
 
           # Build I1 and I2 inline (they're standalone jobs, not sub-workflows)
@@ -269,9 +291,9 @@ jobs:
             --arg i2 "$I2_STATUS" \
             --arg i3 "$I3_STATUS" \
             '[
-              {"id":"I1","name":"infrastructure-scan regression","detail":"infrastructure-scan.yml reusable workflow still works","status":$i1},
-              {"id":"I2","name":"no hardcoded URLs","detail":"No hardcoded github.com in container action scripts","status":$i2},
-              {"id":"I3","name":"config-driven scan","detail":"container-scan-from-config.yml reusable workflow still works","status":$i3}
+              {"id":"I1","name":"infrastructure-scan regression","detail":"Does the infrastructure-scan reusable workflow still complete a trivy-iac and checkov run?","status":$i1},
+              {"id":"I2","name":"no hardcoded URLs","detail":"Are the container action shell scripts still free of hardcoded github.com URLs?","status":$i2},
+              {"id":"I3","name":"config-driven scan","detail":"Does the container-scan-from-config reusable workflow still scan the containers named in a config file?","status":$i3}
             ]')
 
           # Merge all into one array
@@ -281,9 +303,10 @@ jobs:
             --argjson r "$REMOTE_ARR" \
             --argjson d "$DISCOVER_ARR" \
             --argjson c "$COMBO_ARR" \
+            --argjson e "$EDGE_ARR" \
             --argjson s "$SCN_ARR" \
             --argjson i "$REGRESSION_ARR" \
-            '$u + $a + $r + $d + $c + $s + $i')
+            '$u + $a + $r + $d + $c + $e + $s + $i')
 
           # Export for dashboard generation step
           {
@@ -347,8 +370,9 @@ jobs:
             echo "| $(cat_icon "$UNIT_RESULT") | Unit Tests (U1-U5) | 5 | $(cat_counts "$UNIT_ARR") |"
             echo "| $(cat_icon "$ACTIONS_RESULT") | Direct Action Tests (A1-A5) | 5 | $(cat_counts "$ACTIONS_ARR") |"
             echo "| $(cat_icon "$REMOTE_RESULT") | Remote Mode Tests (R1-R12) | 12 | $(cat_counts "$REMOTE_ARR") |"
-            echo "| $(cat_icon "$DISCOVER_RESULT") | Discover Mode Tests (D1-D3) | 3 | $(cat_counts "$DISCOVER_ARR") |"
+            echo "| $(cat_icon "$DISCOVER_RESULT") | Discover Mode Tests (D1-D4) | 4 | $(cat_counts "$DISCOVER_ARR") |"
             echo "| $(cat_icon "$COMBO_RESULT") | Combination Tests (C1-C15) | 15 | $(cat_counts "$COMBO_ARR") |"
+            echo "| $(cat_icon "$EDGE_RESULT") | Edge & Adversarial Tests (E1-E12) | 12 | $(cat_counts "$EDGE_ARR") |"
             echo "| $(cat_icon "$SCN_RESULT") | SCN Detector Tests (S1-S25) | 25 | $(cat_counts "$SCN_ARR") |"
             echo "| $(cat_icon "$I1") | Infrastructure Scan (I1) | 1 | $([ "$I1_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
             echo "| $(cat_icon "$I2") | No Hardcoded URLs (I2) | 1 | $([ "$I2_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
@@ -402,6 +426,15 @@ jobs:
               '.[] | "| \(if .status == "pass" then ":white_check_mark:" elif .status == "FAIL" then ":x:" elif .status == "skip" then ":next_track_button:" else ":grey_question:" end) | \(.id) | \(.name) | \(.detail) | [log](\($url)) |"'
             echo ""
 
+            # ---- Section: Edge & Adversarial Tests ----
+            echo "### Edge & Adversarial Tests"
+            echo ""
+            echo "| Status | ID | Name | Detail | Log |"
+            echo "|--------|----|------|--------|-----|"
+            echo "$EDGE_ARR" | jq -r --arg url "$RUN_URL" \
+              '.[] | "| \(if .status == "pass" then ":white_check_mark:" elif .status == "FAIL" then ":x:" elif .status == "skip" then ":next_track_button:" else ":grey_question:" end) | \(.id) | \(.name) | \(.detail) | [log](\($url)) |"'
+            echo ""
+
             # ---- Section: SCN Detector Tests ----
             echo "### SCN Detector Tests"
             echo ""
@@ -433,13 +466,14 @@ jobs:
           REMOTE: ${{ needs.remote-tests.result }}
           DISCOVER: ${{ needs.discover-tests.result }}
           COMBO: ${{ needs.combination-tests.result }}
+          EDGE: ${{ needs.edge-tests.result }}
           SCN: ${{ needs.scn-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
           I3: ${{ needs.i3-config-scan.result }}
         run: |
           FAILED=0
-          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$SCN" "$I1" "$I2" "$I3"; do
+          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$EDGE" "$SCN" "$I1" "$I2" "$I3"; do
             [ "$result" = "failure" ] && FAILED=$((FAILED + 1))
           done
 
@@ -472,7 +506,13 @@ jobs:
           echo "argus_sha=${ARGUS_SHA}" >> "$GITHUB_OUTPUT"
           echo "argus_sha_short=${ARGUS_SHA_SHORT}" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved ${ARGUS_REPO}@${ARGUS_REF} to ${ARGUS_SHA_SHORT}"
+          # The release version that ref reports -- what a consumer would pin to.
+          ARGUS_VERSION=$(gh api "repos/${ARGUS_REPO}/contents/version.yaml?ref=${ARGUS_REF}" \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
+            | head -1 | awk '{print $1}' | tr -d '"' ) || ARGUS_VERSION=""
+          echo "argus_version=${ARGUS_VERSION}" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved ${ARGUS_REPO}@${ARGUS_REF} to ${ARGUS_SHA_SHORT} (version ${ARGUS_VERSION:-unknown})"
 
       - name: Fetch previous history.json
         run: |
@@ -484,14 +524,35 @@ jobs:
           jq empty _site/history.json 2>/dev/null || echo '[]' > _site/history.json
           echo "History entries loaded: $(jq 'length' _site/history.json)"
 
+      # Per-job log URLs so the dashboard's Logs column points at the job that ran
+      # each test rather than repeating the run URL on every row. Best effort:
+      # if this fails the dashboard falls back to the run URL.
+      - name: Map test jobs to their logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          JOBS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --paginate --jq '.jobs[] | {name: .name, url: .html_url}' 2>/dev/null \
+            | jq -s -c '.' 2>/dev/null) || JOBS='[]'
+          [ -n "$JOBS" ] || JOBS='[]'
+          echo "Mapped $(echo "$JOBS" | jq 'length') job(s) to log URLs"
+          {
+            echo "JOBS_JSON<<GHEOF"
+            echo "$JOBS"
+            echo "GHEOF"
+          } >> "$GITHUB_ENV"
+
       - name: Generate dashboard
         env:
+          JOBS_JSON: ${{ env.JOBS_JSON }}
           ALL_JSON: ${{ env.ALL_JSON }}
           UNIT_JSON: ${{ needs.unit-tests.outputs.results }}
           ACTIONS_JSON: ${{ needs.action-tests.outputs.results }}
           REMOTE_JSON: ${{ needs.remote-tests.outputs.results }}
           DISCOVER_JSON: ${{ needs.discover-tests.outputs.results }}
           COMBO_JSON: ${{ needs.combination-tests.outputs.results }}
+          EDGE_JSON: ${{ needs.edge-tests.outputs.results }}
           SCN_JSON: ${{ needs.scn-tests.outputs.results }}
           REGRESSION_JSON: ${{ env.REGRESSION_JSON }}
           UNIT_RESULT: ${{ needs.unit-tests.result }}
@@ -499,6 +560,7 @@ jobs:
           REMOTE_RESULT: ${{ needs.remote-tests.result }}
           DISCOVER_RESULT: ${{ needs.discover-tests.result }}
           COMBO_RESULT: ${{ needs.combination-tests.result }}
+          EDGE_RESULT: ${{ needs.edge-tests.result }}
           SCN_RESULT: ${{ needs.scn-tests.result }}
           I1_RESULT: ${{ needs.i1-infrastructure-scan.result }}
           I2_RESULT: ${{ needs.i2-no-hardcoded-urls.result }}
@@ -507,11 +569,15 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
+          # Pins each table row's "source" link to the exact commit of this
+          # repo that defined the test, rather than drifting with main.
+          SELF_SHA: ${{ github.sha }}
           PAGES_DIR: _site
           ARGUS_REPO: ${{ steps.argus-ref.outputs.argus_repo }}
           ARGUS_REF: ${{ steps.argus-ref.outputs.argus_ref }}
           ARGUS_SHA: ${{ steps.argus-ref.outputs.argus_sha }}
           ARGUS_SHA_SHORT: ${{ steps.argus-ref.outputs.argus_sha_short }}
+          ARGUS_VERSION: ${{ steps.argus-ref.outputs.argus_version }}
         run: bash .github/scripts/generate-dashboard.sh
 
       - name: Setup Pages

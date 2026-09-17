@@ -22,6 +22,8 @@ jobs:
     name: "U1: parse-container-config"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -36,6 +38,26 @@ jobs:
 
       - name: Install dependencies
         run: pip install pytest pytest-cov pyyaml
+
+      # Enumerate what this suite actually checks, so the dashboard can show the
+      # individual assertions behind the one-line question instead of hiding a
+      # whole pytest file behind "do the unit tests pass?". Collection is
+      # best-effort and never fails the job: if the paths have moved, this comes
+      # back empty and the test run below reports the breakage as usual.
+      - name: Enumerate what these tests check
+        id: checks
+        continue-on-error: true
+        env:
+          PYTHONPATH: .github/actions
+        run: |
+          RAW=$(pytest --collect-only -q --no-cov .github/actions/parse-container-config/tests/test_parse_container_config.py 2>/dev/null | grep '::' || true)
+          CHECKS=$(printf '%s\n' "$RAW" \
+            | sed -E 's/.*:://; s/\[.*$//' \
+            | sed -E 's/^test_//; s/_/ /g' \
+            | awk 'NF' | sort -u | jq -R . | jq -s -c '.' 2>/dev/null)
+          [ -n "$CHECKS" ] || CHECKS='[]'
+          echo "Collected $(echo "$CHECKS" | jq 'length') check(s)"
+          echo "checks=$CHECKS" >> "$GITHUB_OUTPUT"
 
       - name: Run parse-container-config tests
         run: pytest .github/actions/parse-container-config/tests/test_parse_container_config.py -v --no-cov --tb=short
@@ -45,6 +67,8 @@ jobs:
     name: "U2: scanner-container"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -59,6 +83,26 @@ jobs:
 
       - name: Install dependencies
         run: pip install pytest pytest-cov pyyaml
+
+      # Enumerate what this suite actually checks, so the dashboard can show the
+      # individual assertions behind the one-line question instead of hiding a
+      # whole pytest file behind "do the unit tests pass?". Collection is
+      # best-effort and never fails the job: if the paths have moved, this comes
+      # back empty and the test run below reports the breakage as usual.
+      - name: Enumerate what these tests check
+        id: checks
+        continue-on-error: true
+        env:
+          PYTHONPATH: .github/actions
+        run: |
+          RAW=$(pytest --collect-only -q --no-cov .github/actions/scanner-container/tests/test_parse_trivy_results.py .github/actions/scanner-container/tests/test_parse_grype_results.py .github/actions/scanner-container/tests/test_generate_container_summary.py 2>/dev/null | grep '::' || true)
+          CHECKS=$(printf '%s\n' "$RAW" \
+            | sed -E 's/.*:://; s/\[.*$//' \
+            | sed -E 's/^test_//; s/_/ /g' \
+            | awk 'NF' | sort -u | jq -R . | jq -s -c '.' 2>/dev/null)
+          [ -n "$CHECKS" ] || CHECKS='[]'
+          echo "Collected $(echo "$CHECKS" | jq 'length') check(s)"
+          echo "checks=$CHECKS" >> "$GITHUB_OUTPUT"
 
       - name: Run scanner-container tests
         env:
@@ -75,6 +119,8 @@ jobs:
     name: "U3: other scanner tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -89,6 +135,26 @@ jobs:
 
       - name: Install dependencies
         run: pip install pytest pytest-cov pyyaml
+
+      # Enumerate what this suite actually checks, so the dashboard can show the
+      # individual assertions behind the one-line question instead of hiding a
+      # whole pytest file behind "do the unit tests pass?". Collection is
+      # best-effort and never fails the job: if the paths have moved, this comes
+      # back empty and the test run below reports the breakage as usual.
+      - name: Enumerate what these tests check
+        id: checks
+        continue-on-error: true
+        env:
+          PYTHONPATH: .github/actions
+        run: |
+          RAW=$(pytest --collect-only -q --no-cov .github/actions/scanner-checkov/tests/ .github/actions/scanner-clamav/tests/ .github/actions/scanner-codeql/tests/ .github/actions/scanner-opengrep/tests/ .github/actions/scanner-trivy-iac/tests/ .github/actions/scanner-zap/tests/ .github/actions/parse-zap-config/tests/ 2>/dev/null | grep '::' || true)
+          CHECKS=$(printf '%s\n' "$RAW" \
+            | sed -E 's/.*:://; s/\[.*$//' \
+            | sed -E 's/^test_//; s/_/ /g' \
+            | awk 'NF' | sort -u | jq -R . | jq -s -c '.' 2>/dev/null)
+          [ -n "$CHECKS" ] || CHECKS='[]'
+          echo "Collected $(echo "$CHECKS" | jq 'length') check(s)"
+          echo "checks=$CHECKS" >> "$GITHUB_OUTPUT"
 
       - name: Run other scanner tests
         env:
@@ -109,6 +175,8 @@ jobs:
     name: "U4: scn-detector tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -125,6 +193,26 @@ jobs:
         run: |
           pip install pytest pytest-cov pyyaml requests
 
+      # Enumerate what this suite actually checks, so the dashboard can show the
+      # individual assertions behind the one-line question instead of hiding a
+      # whole pytest file behind "do the unit tests pass?". Collection is
+      # best-effort and never fails the job: if the paths have moved, this comes
+      # back empty and the test run below reports the breakage as usual.
+      - name: Enumerate what these tests check
+        id: checks
+        continue-on-error: true
+        env:
+          PYTHONPATH: .github/actions
+        run: |
+          RAW=$(pytest --collect-only -q --no-cov .github/actions/scn-detector/tests/ 2>/dev/null | grep '::' || true)
+          CHECKS=$(printf '%s\n' "$RAW" \
+            | sed -E 's/.*:://; s/\[.*$//' \
+            | sed -E 's/^test_//; s/_/ /g' \
+            | awk 'NF' | sort -u | jq -R . | jq -s -c '.' 2>/dev/null)
+          [ -n "$CHECKS" ] || CHECKS='[]'
+          echo "Collected $(echo "$CHECKS" | jq 'length') check(s)"
+          echo "checks=$CHECKS" >> "$GITHUB_OUTPUT"
+
       - name: Run SCN detector tests
         env:
           PYTHONPATH: .github/actions
@@ -135,12 +223,26 @@ jobs:
     name: "U5: GHES static analysis"
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
         with:
           repository: huntridge-labs/argus
           ref: ${{ inputs.argus_ref || 'main' }}
+
+      - name: Enumerate what this check asserts
+        id: checks
+        run: |
+          jq -n -c '[
+            "no hardcoded github.com in scanner-container scripts",
+            "no hardcoded github.com in scanner-container-summary scripts",
+            "no hardcoded github.com in parse-container-config scripts",
+            "no hardcoded github.com in action.yml run blocks",
+            "github.server_url and GITHUB_SERVER_URL references allowed"
+          ]' > checks.json
+          echo "checks=$(cat checks.json)" >> "$GITHUB_OUTPUT"
 
       - name: Check for hardcoded github.com URLs in action scripts
         run: |
@@ -197,6 +299,11 @@ jobs:
         id: collect
         env:
           U1: ${{ needs.parse-container-config.result }}
+          U1C: ${{ needs.parse-container-config.outputs.checks }}
+          U2C: ${{ needs.scanner-container.outputs.checks }}
+          U3C: ${{ needs.other-scanners.outputs.checks }}
+          U4C: ${{ needs.scn-detector.outputs.checks }}
+          U5C: ${{ needs.ghes-static-analysis.outputs.checks }}
           U2: ${{ needs.scanner-container.result }}
           U3: ${{ needs.other-scanners.result }}
           U4: ${{ needs.scn-detector.result }}
@@ -211,17 +318,25 @@ jobs:
               *) echo "unknown" ;;
             esac
           }
+          # A job that never ran, or whose collection failed, yields an empty
+          # string here; jq needs valid JSON either way.
+          safe_arr() { if [ -n "$1" ] && echo "$1" | jq empty 2>/dev/null; then echo "$1"; else echo '[]'; fi; }
+          C1=$(safe_arr "${U1C:-}"); C2=$(safe_arr "${U2C:-}"); C3=$(safe_arr "${U3C:-}")
+          C4=$(safe_arr "${U4C:-}"); C5=$(safe_arr "${U5C:-}")
+
           RESULTS=$(jq -n -c \
+            --argjson c1 "$C1" --argjson c2 "$C2" --argjson c3 "$C3" \
+            --argjson c4 "$C4" --argjson c5 "$C5" \
             --arg u1 "$(to_status "$U1")" \
             --arg u2 "$(to_status "$U2")" \
             --arg u3 "$(to_status "$U3")" \
             --arg u4 "$(to_status "$U4")" \
             --arg u5 "$(to_status "$U5")" \
             '[
-              {"id":"U1","name":"parse-container-config","detail":"Config parsing, schema validation, matrix generation (Python/pytest)","status":$u1},
-              {"id":"U2","name":"scanner-container","detail":"Trivy parser, Grype parser, summary generation (Python/pytest)","status":$u2},
-              {"id":"U3","name":"other scanner tests","detail":"Checkov, ClamAV, CodeQL, OpenGrep, Trivy-IaC, ZAP (Python/pytest)","status":$u3},
-              {"id":"U4","name":"scn-detector tests","detail":"SCN detector AI classifier, diff helpers, report generation (Python/pytest)","status":$u4},
-              {"id":"U5","name":"GHES static analysis","detail":"No hardcoded github.com URLs in actions","status":$u5}
+              {"id":"U1","name":"parse-container-config","detail":"Do the parse-container-config unit tests pass for config parsing, schema validation and matrix generation?","status":$u1,"checks":$c1},
+              {"id":"U2","name":"scanner-container","detail":"Do the scanner-container unit tests pass for the trivy parser, grype parser and summary generator?","status":$u2,"checks":$c2},
+              {"id":"U3","name":"other scanner tests","detail":"Do the checkov, clamav, codeql, opengrep, trivy-iac and zap parser unit tests pass?","status":$u3,"checks":$c3},
+              {"id":"U4","name":"scn-detector tests","detail":"Do the SCN detector unit tests pass for the AI classifier, diff helpers and report generation?","status":$u4,"checks":$c4},
+              {"id":"U5","name":"GHES static analysis","detail":"Are the container action scripts free of hardcoded github.com URLs so they work on GHES?","status":$u5,"checks":$c5}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

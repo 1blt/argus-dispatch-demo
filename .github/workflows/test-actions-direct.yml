@@ -357,10 +357,10 @@ jobs:
             --arg a4 "$(to_status "$A4")" \
             --arg a5 "$(to_status "$A5")" \
             '[
-              {"id":"A1","name":"config-single-public","detail":"Single public container config parsing + matrix","status":$a1},
-              {"id":"A2","name":"config-multi-container","detail":"Multi-container config (3 containers, matrix expansion)","status":$a2},
-              {"id":"A3","name":"config-structured-image","detail":"Structured image reference format resolution","status":$a3},
-              {"id":"A4","name":"config-all-options","detail":"Full schema config (registry, auth, all flags)","status":$a4},
-              {"id":"A5","name":"config-invalid-duplicate","detail":"Duplicate container names correctly rejected","status":$a5}
+              {"id":"A1","name":"config-single-public","detail":"Does parse-container-config emit one matrix entry for a config holding a single public container?","status":$a1},
+              {"id":"A2","name":"config-multi-container","detail":"Does parse-container-config expand a three-container config into the expected scan matrix?","status":$a2},
+              {"id":"A3","name":"config-structured-image","detail":"Does parse-container-config build the image reference from a structured image object?","status":$a3},
+              {"id":"A4","name":"config-all-options","detail":"Does parse-container-config accept a config that populates every schema field, including registry and auth?","status":$a4},
+              {"id":"A5","name":"config-invalid-duplicate","detail":"Does parse-container-config reject a config that declares two containers with the same name?","status":$a5}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
