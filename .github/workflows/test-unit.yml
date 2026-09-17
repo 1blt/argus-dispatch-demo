@@ -38,7 +38,13 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install pytest pytest-cov pyyaml
+        # argus's own requirements, not a hand-kept list: U1 broke on a missing
+        # python-slugify that has been in requirements.txt all along, and a
+        # hand-kept list silently rots every time argus adds an import.
+        run: |
+          pip install pytest pytest-cov
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          pip install -e . 2>/dev/null || true
 
       # Enumerate what this suite actually checks, so the dashboard can show the
       # individual assertions behind the one-line question instead of hiding a
@@ -117,7 +123,13 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install pytest pytest-cov pyyaml
+        # argus's own requirements, not a hand-kept list: U1 broke on a missing
+        # python-slugify that has been in requirements.txt all along, and a
+        # hand-kept list silently rots every time argus adds an import.
+        run: |
+          pip install pytest pytest-cov
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          pip install -e . 2>/dev/null || true
 
       # Enumerate what this suite actually checks, so the dashboard can show the
       # individual assertions behind the one-line question instead of hiding a
@@ -130,7 +142,7 @@ jobs:
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov .github/actions/scanner-container/tests/test_parse_trivy_results.py .github/actions/scanner-container/tests/test_parse_grype_results.py .github/actions/scanner-container/tests/test_generate_container_summary.py 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q --no-cov argus/tests/scanners/test_trivy.py argus/tests/scanners/test_grype.py argus/tests/scanners/test_container.py argus/tests/scanners/test_vuln_parsers.py 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
@@ -145,9 +157,10 @@ jobs:
         run: |
           set +e
           pytest \
-            .github/actions/scanner-container/tests/test_parse_trivy_results.py \
-            .github/actions/scanner-container/tests/test_parse_grype_results.py \
-            .github/actions/scanner-container/tests/test_generate_container_summary.py \
+            argus/tests/scanners/test_trivy.py \
+            argus/tests/scanners/test_grype.py \
+            argus/tests/scanners/test_container.py \
+            argus/tests/scanners/test_vuln_parsers.py \
             -v --no-cov --tb=short --junit-xml=junit.xml
           RC=$?
           exit $RC
@@ -202,7 +215,13 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install pytest pytest-cov pyyaml
+        # argus's own requirements, not a hand-kept list: U1 broke on a missing
+        # python-slugify that has been in requirements.txt all along, and a
+        # hand-kept list silently rots every time argus adds an import.
+        run: |
+          pip install pytest pytest-cov
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          pip install -e . 2>/dev/null || true
 
       # Enumerate what this suite actually checks, so the dashboard can show the
       # individual assertions behind the one-line question instead of hiding a
@@ -215,7 +234,7 @@ jobs:
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov .github/actions/scanner-checkov/tests/ .github/actions/scanner-clamav/tests/ .github/actions/scanner-codeql/tests/ .github/actions/scanner-opengrep/tests/ .github/actions/scanner-trivy-iac/tests/ .github/actions/scanner-zap/tests/ .github/actions/parse-zap-config/tests/ 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q --no-cov argus/tests/scanners/test_checkov.py argus/tests/scanners/test_clamav.py argus/tests/scanners/test_opengrep.py argus/tests/scanners/test_trivy_iac.py argus/tests/scanners/test_zap.py .github/actions/scanner-codeql/tests/ .github/actions/parse-zap-config/tests/ 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
@@ -230,12 +249,12 @@ jobs:
         run: |
           set +e
           pytest \
-            .github/actions/scanner-checkov/tests/ \
-            .github/actions/scanner-clamav/tests/ \
+            argus/tests/scanners/test_checkov.py \
+            argus/tests/scanners/test_clamav.py \
+            argus/tests/scanners/test_opengrep.py \
+            argus/tests/scanners/test_trivy_iac.py \
+            argus/tests/scanners/test_zap.py \
             .github/actions/scanner-codeql/tests/ \
-            .github/actions/scanner-opengrep/tests/ \
-            .github/actions/scanner-trivy-iac/tests/ \
-            .github/actions/scanner-zap/tests/ \
             .github/actions/parse-zap-config/tests/ \
             -v --no-cov --tb=short --junit-xml=junit.xml
           RC=$?
@@ -292,7 +311,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest pytest-cov pyyaml requests
+          pip install pytest pytest-cov requests
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          pip install -e . 2>/dev/null || true
 
       # Enumerate what this suite actually checks, so the dashboard can show the
       # individual assertions behind the one-line question instead of hiding a
@@ -380,55 +401,56 @@ jobs:
 
       - name: Check for hardcoded github.com URLs in action scripts
         run: |
-          echo "Scanning action scripts for hardcoded github.com URLs..."
-          VIOLATIONS=0
+          echo "Scanning action logic for hardcoded github.com URLs..."
 
-          # Search Python and shell scripts in actions for hardcoded URLs
-          # Exclude test files, README, docs, comments, and the server_url references
-          while IFS= read -r script; do
-            [[ "$script" == *"/tests/"* ]] && continue
-            [[ "$script" == *"__pycache__"* ]] && continue
-            MATCHES=$(grep -n 'https://github\.com' "$script" | grep -v '^\s*#' | grep -v 'github\.server_url' | grep -v 'GITHUB_SERVER_URL' || true)
-            if [ -n "$MATCHES" ]; then
-              echo "VIOLATION in $script:"
-              echo "$MATCHES"
-              VIOLATIONS=$((VIOLATIONS + 1))
-            fi
-          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "*.sh" -o -name "*.py" -type f 2>/dev/null)
+          # Only executable content counts. The previous version grepped whole
+          # action.yml files, so a documentation link inside a `description:`
+          # block scalar -- prose a GHES user never executes -- was reported as
+          # a violation. Parse the YAML and look at `run:` bodies only.
+          python3 - <<'PYEOF'
+          import re, sys, pathlib, yaml
 
-          # Also check action.yml files for hardcoded URLs in run blocks
-          while IFS= read -r action; do
-            MATCHES=$(grep -n 'https://github\.com' "$action" | grep -v '^\s*#' | grep -v 'github\.server_url' | grep -v 'GITHUB_SERVER_URL' | grep -v 'description:' | grep -v 'README' || true)
-            if [ -n "$MATCHES" ]; then
-              echo "VIOLATION in $action:"
-              echo "$MATCHES"
-              VIOLATIONS=$((VIOLATIONS + 1))
-            fi
-          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "action.yml" -type f 2>/dev/null)
+          DIRS = ["scanner-container", "scanner-container-summary", "parse-container-config"]
+          URL = re.compile(r"https://github\.com")
+          ALLOWED = ("github.server_url", "GITHUB_SERVER_URL")
+          violations = []
 
-          if [ "$VIOLATIONS" -gt 0 ]; then
-            echo "::error::Found $VIOLATIONS file(s) with hardcoded github.com URLs"
-            exit 1
-          fi
+          def scan(path, text, label):
+              for i, line in enumerate(text.splitlines(), 1):
+                  if not URL.search(line):
+                      continue
+                  if line.lstrip().startswith("#") or any(a in line for a in ALLOWED):
+                      continue
+                  violations.append(f"{path}:{i} ({label}): {line.strip()}")
 
-          echo "No hardcoded github.com URLs found in action scripts"
+          for d in DIRS:
+              base = pathlib.Path(".github/actions") / d
+              if not base.is_dir():
+                  continue
+              for f in base.rglob("*"):
+                  if not f.is_file() or "/tests/" in str(f) or "__pycache__" in str(f):
+                      continue
+                  if f.suffix in (".sh", ".py"):
+                      scan(str(f), f.read_text(errors="replace"), "script")
+                  elif f.name == "action.yml":
+                      try:
+                          doc = yaml.safe_load(f.read_text())
+                      except Exception as e:
+                          print(f"::warning::could not parse {f}: {e}")
+                          continue
+                      for step in ((doc or {}).get("runs", {}) or {}).get("steps", []) or []:
+                          body = step.get("run")
+                          if isinstance(body, str):
+                              scan(str(f), body, "run block of step %r" % (step.get("name") or "?"))
 
-  # --------------------------------------------------------------------------
-  # Collect individual results for the suite summary
-  # --------------------------------------------------------------------------
-  collect-results:
-    name: "Collect Unit Results"
-    runs-on: ubuntu-latest
-    if: always()
-    needs:
-      - parse-container-config
-      - scanner-container
-      - other-scanners
-      - scn-detector
-      - ghes-static-analysis
-    outputs:
-      results: ${{ steps.collect.outputs.results }}
-    steps:
+          if violations:
+              print("Hardcoded github.com URLs in action logic:")
+              for v in violations:
+                  print("  " + v)
+              print(f"::error::Found {len(violations)} hardcoded github.com URL(s) in action logic")
+              sys.exit(1)
+          print("No hardcoded github.com URLs in action logic")
+          PYEOF
       - name: Build results JSON
         id: collect
         env:

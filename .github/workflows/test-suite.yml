@@ -161,49 +161,56 @@ jobs:
 
       - name: Scan for hardcoded github.com in shell scripts
         run: |
-          echo "Scanning container-related action scripts for hardcoded github.com URLs..."
+          echo "Scanning action logic for hardcoded github.com URLs..."
 
-          VIOLATIONS=0
+          # Only executable content counts. The previous version grepped whole
+          # action.yml files, so a documentation link inside a `description:`
+          # block scalar -- prose a GHES user never executes -- was reported as
+          # a violation. Parse the YAML and look at `run:` bodies only.
+          python3 - <<'PYEOF'
+          import re, sys, pathlib, yaml
 
-          # Scan the container scanning composite actions
-          SCAN_DIRS=(
-            .github/actions/scanner-container
-            .github/actions/scanner-container-summary
-            .github/actions/parse-container-config
-          )
+          DIRS = ["scanner-container", "scanner-container-summary", "parse-container-config"]
+          URL = re.compile(r"https://github\.com")
+          ALLOWED = ("github.server_url", "GITHUB_SERVER_URL")
+          violations = []
 
-          for dir in "${SCAN_DIRS[@]}"; do
-            [ -d "$dir" ] || continue
+          def scan(path, text, label):
+              for i, line in enumerate(text.splitlines(), 1):
+                  if not URL.search(line):
+                      continue
+                  if line.lstrip().startswith("#") or any(a in line for a in ALLOWED):
+                      continue
+                  violations.append(f"{path}:{i} ({label}): {line.strip()}")
 
-            # Check .sh files (skip tests)
-            while IFS= read -r script; do
-              [[ "$script" == *"/tests/"* ]] && continue
-              MATCHES=$(grep -n 'https://github\.com' "$script" 2>/dev/null | grep -v '^\s*#' | grep -v 'github\.server_url' | grep -v 'GITHUB_SERVER_URL' || true)
-              if [ -n "$MATCHES" ]; then
-                echo "VIOLATION: $script"
-                echo "$MATCHES"
-                VIOLATIONS=$((VIOLATIONS + 1))
-              fi
-            done < <(find "$dir" -name "*.sh" -type f)
+          for d in DIRS:
+              base = pathlib.Path(".github/actions") / d
+              if not base.is_dir():
+                  continue
+              for f in base.rglob("*"):
+                  if not f.is_file() or "/tests/" in str(f) or "__pycache__" in str(f):
+                      continue
+                  if f.suffix in (".sh", ".py"):
+                      scan(str(f), f.read_text(errors="replace"), "script")
+                  elif f.name == "action.yml":
+                      try:
+                          doc = yaml.safe_load(f.read_text())
+                      except Exception as e:
+                          print(f"::warning::could not parse {f}: {e}")
+                          continue
+                      for step in ((doc or {}).get("runs", {}) or {}).get("steps", []) or []:
+                          body = step.get("run")
+                          if isinstance(body, str):
+                              scan(str(f), body, "run block of step %r" % (step.get("name") or "?"))
 
-            # Check action.yml
-            if [ -f "$dir/action.yml" ]; then
-              MATCHES=$(grep -n 'https://github\.com' "$dir/action.yml" 2>/dev/null | grep -v '^\s*#' | grep -v 'github\.server_url' | grep -v 'GITHUB_SERVER_URL' | grep -v 'description:' || true)
-              if [ -n "$MATCHES" ]; then
-                echo "VIOLATION: $dir/action.yml"
-                echo "$MATCHES"
-                VIOLATIONS=$((VIOLATIONS + 1))
-              fi
-            fi
-          done
-
-          if [ "$VIOLATIONS" -gt 0 ]; then
-            echo "::error::Found $VIOLATIONS file(s) with hardcoded github.com URLs"
-            exit 1
-          fi
-
-          echo "No hardcoded github.com URLs found in container scanning actions"
-
+          if violations:
+              print("Hardcoded github.com URLs in action logic:")
+              for v in violations:
+                  print("  " + v)
+              print(f"::error::Found {len(violations)} hardcoded github.com URL(s) in action logic")
+              sys.exit(1)
+          print("No hardcoded github.com URLs in action logic")
+          PYEOF
   # ==========================================================================
   # I3: Config-driven container scan regression
   # ==========================================================================
