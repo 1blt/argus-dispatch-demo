@@ -639,14 +639,39 @@ jobs:
             echo "Preserved $KEPT file(s) from /$OTHER/"
           fi
 
+      # The switcher lists only the branches actually present in the artifact.
+      # Publishing is gated by the github-pages environment's deployment branch
+      # policy, so a branch that is not allowed to deploy never appears here --
+      # better than a card linking to a 404. With only one branch published the
+      # root just forwards to it, so the site has no dead ends either way.
       - name: Write the root switcher
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
           touch _site/.nojekyll
+          PRESENT=""
+          for d in main dev; do
+            [ -f "_site/$d/index.html" ] && PRESENT="$PRESENT $d"
+          done
+          PRESENT=$(echo $PRESENT | xargs)
+          COUNT=$(echo "$PRESENT" | wc -w | xargs)
+          echo "Branches published: ${PRESENT:-none} (count=$COUNT)"
+
+          if [ "$COUNT" -le 1 ]; then
+            ONLY=$(echo "$PRESENT" | xargs)
+            [ -n "$ONLY" ] || ONLY="${GITHUB_REF_NAME}"
+            printf '%s\n' \
+              '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' \
+              "<meta http-equiv=\"refresh\" content=\"0; url=$ONLY/\">" \
+              "<link rel=\"canonical\" href=\"$ONLY/\"><title>Argus Test Suite</title>" \
+              "</head><body><p>Redirecting to <a href=\"$ONLY/\">$ONLY</a>.</p></body></html>" \
+              > _site/index.html
+            echo "Root forwards to /$ONLY/"
+            exit 0
+          fi
+
           {
             echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
             echo '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            echo '<title>Argus Test Suite</title><link rel="icon" href="'"$BRANCH"'/favicon.png">'
+            echo '<title>Argus Test Suite</title><link rel="icon" href="'"${GITHUB_REF_NAME}"'/favicon.png">'
             echo '<style>'
             echo "@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@300;400;600;700&display=swap');"
             echo ':root{--bg:#fff;--fg:#1a1a1a;--fg2:#55595c;--fg3:#919aa1;--border:#dee2e6}'
@@ -662,11 +687,13 @@ jobs:
             echo '</style></head><body><div class="w">'
             echo '<h1>Argus Test Suite</h1>'
             echo '<p>Results are published per branch. Each has its own run history.</p>'
-            echo '<a class="card" href="main/"><span class="n">main</span><div class="d">Results for the default branch</div></a>'
-            echo '<a class="card" href="dev/"><span class="n">dev</span><div class="d">Results for work in progress on dev</div></a>'
+            for b in $PRESENT; do
+              if [ "$b" = "main" ]; then D="Results for the default branch"; else D="Results for work in progress on $b"; fi
+              echo '<a class="card" href="'"$b"'/"><span class="n">'"$b"'</span><div class="d">'"$D"'</div></a>'
+            done
             echo '</div></body></html>'
           } > _site/index.html
-          echo "Root switcher written; publishing: $(ls _site)"
+          echo "Root switcher written for: $PRESENT"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
