@@ -559,6 +559,8 @@ jobs:
               {"id":"E9","name":"empty image_ref","detail":"Does argus fail the workflow when a remote scan is asked for with an empty image_ref, so every scan job skips?","status":$e9},
               {"id":"E10","name":"packageless image","detail":"Does argus scan an image that has no package manager database without crashing?","status":$e10},
               {"id":"E11","name":"SARIF upload, zero findings","detail":"Does argus upload SARIF successfully when the scan produced zero findings?","status":$e11},
-              {"id":"E12","name":"scan artifact content","detail":"Does the uploaded scan report show that the scan really ran against the image it was given?","status":$e12}
+              {"id":"E12","name":"scan artifact content","detail":"Does the uploaded scan report show that the scan really ran against the image it was given?","status":$e12},
+              {"id":"E13","name":"foreign-architecture image","detail":"Does argus scan an arm64-only image from an amd64 runner?","status":$e13},
+              {"id":"E14","name":"SARIF upload at scale","detail":"Does argus upload SARIF successfully when a very vulnerable image produces a large result set?","status":$e14}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

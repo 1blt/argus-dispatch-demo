@@ -97,12 +97,16 @@ jobs:
   # --------------------------------------------------------------------------
   # W4: a scanner name the coordinator does not know
   #
-  # The workflow has an explicit branch for this:
-  #   "No scanners were selected. The workflow will execute the summary only."
-  # so the expected outcome is a clean run that scans nothing, not a crash.
-  # This is the orchestration-level twin of E5, and the same caution applies:
-  # if a typo'd scanner name silently produces a green "security scan passed",
-  # that is worth knowing.
+  # Confirmed behaviour (run 35239547696): an unrecognised name does NOT select
+  # nothing. The coordinator falls back to a broad default set -- this run fired
+  # gitleaks, checkov, opengrep, bandit, sbom, trivy-iac and the container
+  # scanner off the single input `bogusscanner`.
+  #
+  # So the workflow completes, which is what this asserts, but the caller did
+  # not get what they asked for and nothing told them. That is arguably worse
+  # than selecting nothing: a typo in a scanners list silently runs a different
+  # scan than the one configured. The orchestration-level twin of E5, which
+  # confirmed the same class of silence one layer down.
   # --------------------------------------------------------------------------
   w4-hardening-unknown-scanner:
     name: "W4: hardening, unknown scanner name"
@@ -201,6 +205,6 @@ jobs:
               {"id":"W1","name":"hardening trivy-iac","detail":"Does the reusable-security-hardening workflow run when a caller selects only the trivy-iac scanner?","status":$w1},
               {"id":"W2","name":"hardening lint","detail":"Does the reusable-security-hardening workflow run when a caller selects only the lint scanners?","status":$w2},
               {"id":"W3","name":"hardening multi-scanner","detail":"Does the reusable-security-hardening workflow fan out and stitch a summary when a caller selects gitleaks and trivy-iac together?","status":$w3},
-              {"id":"W4","name":"hardening unknown scanner","detail":"Does the reusable-security-hardening workflow finish cleanly when the scanners input names nothing it recognises?","status":$w4}
+              {"id":"W4","name":"hardening unknown scanner","detail":"Does the reusable-security-hardening workflow finish cleanly when the scanners input names nothing it recognises? (It does, by falling back to a broad default set rather than warning.)","status":$w4}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

@@ -120,7 +120,12 @@ jobs:
   # --------------------------------------------------------------------------
   d4-build-gate-isolated:
     name: "D4: build gate (severity=none)"
+    # D3 is EXPECTED to fail, and a plain `needs:` would skip this job when it
+    # does -- which is what happened on the first real run: D4 reported
+    # 'skipped' instead of 'failure'. The dependency here is only to serialise
+    # discover runs, not to gate on D3's outcome.
     needs: d3-discover-fail-closed
+    if: always()
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
