@@ -234,8 +234,15 @@ jobs:
   # the thing it is named after.
   #
   # nginx:1.19.0 scanned by trivy AND grype is guaranteed to surface the same
-  # CVEs twice, so the report's unique count must come out below its total. The
-  # assertion lives in r12-assert-dedup below, which reads the scan artifact.
+  # CVEs twice, so the combined count must come out below the sum of what each
+  # scanner reported on its own. The assertion lives in r12-assert-dedup below,
+  # which reads the scan artifact.
+  #
+  # It does NOT compare the combined section's Total against its Unique. Both
+  # are post-deduplication and therefore equal by construction (run
+  # 35266319241: 416 and 416), so that comparison reads as a dedup failure
+  # against an argus that is deduplicating correctly -- there, 332 + 406
+  # per-scanner findings collapsed to 416.
   # --------------------------------------------------------------------------
   r12-dedup-validation:
     name: "R12: dedup validation"
@@ -281,27 +288,40 @@ jobs:
             else
               echo "----- report -----"; cat "$REPORT"; echo "------------------"
 
-              # The container reporter emits a deduplicated combined section and
-              # a breakdown carrying total and unique counts per container.
               if ! grep -qiE 'combined \(deduplicated\)|combined findings' "$REPORT"; then
                 fail "Report has no combined/deduplicated section. If the report format changed, update this assertion rather than dropping it."
               fi
 
-              # Pull the first "| <total> | <unique> |" pair from the breakdown.
-              NUMS=$(grep -oE '\| *[0-9]+ *\| *[0-9]+ *\|' "$REPORT" | head -n 1 | tr -dc '0-9 ')
-              TOTAL=$(echo "$NUMS" | awk '{print $1}')
-              UNIQUE=$(echo "$NUMS" | awk '{print $2}')
-              if [ -z "${TOTAL:-}" ] || [ -z "${UNIQUE:-}" ]; then
-                fail "Could not read total and unique counts from the report"
+              # Each scanner's own section carries its counts, as in
+              # "Trivy Scanner (510 findings, 332 unique)". Summing the
+              # per-scanner unique counts gives what the combined section would
+              # hold if nothing were collapsed ACROSS scanners.
+              SCANNER_UNIQUES=$(grep -oE '[A-Za-z]+ Scanner \([0-9]+ findings, [0-9]+ unique\)' "$REPORT" \
+                                | grep -oE '[0-9]+ unique' | grep -oE '^[0-9]+')
+              SCANNER_COUNT=$(printf '%s\n' "$SCANNER_UNIQUES" | grep -c '^[0-9]\+$')
+              SUM_UNIQUE=$(printf '%s\n' "$SCANNER_UNIQUES" | awk '{s+=$1} END {print s+0}')
+
+              # The combined section is ALREADY deduplicated, so its Total and
+              # Unique columns are the same number by construction -- comparing
+              # them to each other proves nothing, which is how the previous
+              # version of this test read as a dedup failure against an argus
+              # that was deduplicating correctly. The evidence of dedup is the
+              # combined count landing BELOW the per-scanner sum.
+              COMBINED=$(grep -oE '[0-9]+ vulnerabilities \([0-9]+ unique\)' "$REPORT" \
+                         | head -n 1 | grep -oE '\([0-9]+' | tr -dc '0-9')
+
+              echo "scanners=$SCANNER_COUNT per-scanner-unique-sum=$SUM_UNIQUE combined=$COMBINED"
+
+              if [ "$SCANNER_COUNT" -lt 2 ]; then
+                fail "Only $SCANNER_COUNT scanner section(s) in the report; cross-scanner dedup cannot be tested. R12 asks for trivy,grype -- if one silently dropped out, that is the finding."
+              elif [ -z "${COMBINED:-}" ]; then
+                fail "Could not read the combined finding count from the report"
+              elif [ "$COMBINED" -eq 0 ]; then
+                fail "Combined count is 0: nothing was scanned, so dedup could not be exercised"
+              elif [ "$COMBINED" -ge "$SUM_UNIQUE" ]; then
+                fail "combined ($COMBINED) is not below the per-scanner sum ($SUM_UNIQUE): trivy and grype both scanned nginx:1.19.0 and nothing was deduplicated across them"
               else
-                echo "total=$TOTAL unique=$UNIQUE"
-                if [ "$UNIQUE" -gt "$TOTAL" ]; then
-                  fail "unique ($UNIQUE) exceeds total ($TOTAL), which cannot happen after deduplication"
-                elif [ "$UNIQUE" -eq "$TOTAL" ]; then
-                  fail "unique equals total ($TOTAL): trivy and grype both scanned nginx:1.19.0 and nothing was deduplicated"
-                else
-                  echo "Deduplication removed $((TOTAL - UNIQUE)) duplicate finding(s)"
-                fi
+                echo "Deduplication collapsed $SUM_UNIQUE per-scanner findings into $COMBINED across $SCANNER_COUNT scanners"
               fi
             fi
           fi
