@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.checks.outputs.checks }}
+      stats: ${{ steps.stats.outputs.stats }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -60,7 +61,40 @@ jobs:
           echo "checks=$CHECKS" >> "$GITHUB_OUTPUT"
 
       - name: Run parse-container-config tests
-        run: pytest .github/actions/parse-container-config/tests/test_parse_container_config.py -v --no-cov --tb=short
+        run: |
+          set +e
+          pytest .github/actions/parse-container-config/tests/test_parse_container_config.py -v --no-cov --tb=short --junit-xml=junit.xml
+          RC=$?
+          exit $RC
+      # Counts, not just a pass/fail dot: "U3 failed" could be one broken
+      # assertion or forty. The junit report gives the split and the names of
+      # what broke, so the dashboard can show severity.
+      - name: Summarise pass/fail
+        id: stats
+        if: always()
+        run: |
+          if [ ! -f junit.xml ]; then
+            echo 'stats={"total":0,"passed":0,"failed":0,"skipped":0,"failures":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, xml.etree.ElementTree as ET
+          root = ET.parse('junit.xml').getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          total = bad = skipped = 0
+          names = []
+          for s in suites:
+              total += int(s.get('tests', 0) or 0)
+              bad += int(s.get('failures', 0) or 0) + int(s.get('errors', 0) or 0)
+              skipped += int(s.get('skipped', 0) or 0)
+              for tc in s.iter('testcase'):
+                  if tc.find('failure') is not None or tc.find('error') is not None:
+                      names.append((tc.get('name') or '').replace('test_', '', 1).replace('_', ' '))
+          print('stats=' + json.dumps({
+              'total': total, 'passed': max(total - bad - skipped, 0),
+              'failed': bad, 'skipped': skipped, 'failures': sorted(set(names))[:20],
+          }))
+          PYEOF
 
   # U2: scanner-container unit tests (trivy parser, grype parser, summary generator)
   scanner-container:
@@ -69,6 +103,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.checks.outputs.checks }}
+      stats: ${{ steps.stats.outputs.stats }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -108,11 +143,43 @@ jobs:
         env:
           PYTHONPATH: .github/actions
         run: |
+          set +e
           pytest \
             .github/actions/scanner-container/tests/test_parse_trivy_results.py \
             .github/actions/scanner-container/tests/test_parse_grype_results.py \
             .github/actions/scanner-container/tests/test_generate_container_summary.py \
-            -v --no-cov --tb=short
+            -v --no-cov --tb=short --junit-xml=junit.xml
+          RC=$?
+          exit $RC
+      # Counts, not just a pass/fail dot: "U3 failed" could be one broken
+      # assertion or forty. The junit report gives the split and the names of
+      # what broke, so the dashboard can show severity.
+      - name: Summarise pass/fail
+        id: stats
+        if: always()
+        run: |
+          if [ ! -f junit.xml ]; then
+            echo 'stats={"total":0,"passed":0,"failed":0,"skipped":0,"failures":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, xml.etree.ElementTree as ET
+          root = ET.parse('junit.xml').getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          total = bad = skipped = 0
+          names = []
+          for s in suites:
+              total += int(s.get('tests', 0) or 0)
+              bad += int(s.get('failures', 0) or 0) + int(s.get('errors', 0) or 0)
+              skipped += int(s.get('skipped', 0) or 0)
+              for tc in s.iter('testcase'):
+                  if tc.find('failure') is not None or tc.find('error') is not None:
+                      names.append((tc.get('name') or '').replace('test_', '', 1).replace('_', ' '))
+          print('stats=' + json.dumps({
+              'total': total, 'passed': max(total - bad - skipped, 0),
+              'failed': bad, 'skipped': skipped, 'failures': sorted(set(names))[:20],
+          }))
+          PYEOF
 
   # U3: Other scanner unit tests (checkov, clamav, codeql, opengrep, trivy-iac, zap)
   other-scanners:
@@ -121,6 +188,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.checks.outputs.checks }}
+      stats: ${{ steps.stats.outputs.stats }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -160,6 +228,7 @@ jobs:
         env:
           PYTHONPATH: .github/actions
         run: |
+          set +e
           pytest \
             .github/actions/scanner-checkov/tests/ \
             .github/actions/scanner-clamav/tests/ \
@@ -168,7 +237,38 @@ jobs:
             .github/actions/scanner-trivy-iac/tests/ \
             .github/actions/scanner-zap/tests/ \
             .github/actions/parse-zap-config/tests/ \
-            -v --no-cov --tb=short
+            -v --no-cov --tb=short --junit-xml=junit.xml
+          RC=$?
+          exit $RC
+      # Counts, not just a pass/fail dot: "U3 failed" could be one broken
+      # assertion or forty. The junit report gives the split and the names of
+      # what broke, so the dashboard can show severity.
+      - name: Summarise pass/fail
+        id: stats
+        if: always()
+        run: |
+          if [ ! -f junit.xml ]; then
+            echo 'stats={"total":0,"passed":0,"failed":0,"skipped":0,"failures":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, xml.etree.ElementTree as ET
+          root = ET.parse('junit.xml').getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          total = bad = skipped = 0
+          names = []
+          for s in suites:
+              total += int(s.get('tests', 0) or 0)
+              bad += int(s.get('failures', 0) or 0) + int(s.get('errors', 0) or 0)
+              skipped += int(s.get('skipped', 0) or 0)
+              for tc in s.iter('testcase'):
+                  if tc.find('failure') is not None or tc.find('error') is not None:
+                      names.append((tc.get('name') or '').replace('test_', '', 1).replace('_', ' '))
+          print('stats=' + json.dumps({
+              'total': total, 'passed': max(total - bad - skipped, 0),
+              'failed': bad, 'skipped': skipped, 'failures': sorted(set(names))[:20],
+          }))
+          PYEOF
 
   # U4: SCN detector unit tests
   scn-detector:
@@ -177,6 +277,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.checks.outputs.checks }}
+      stats: ${{ steps.stats.outputs.stats }}
     steps:
       - name: Checkout argus
         uses: actions/checkout@v4
@@ -216,7 +317,40 @@ jobs:
       - name: Run SCN detector tests
         env:
           PYTHONPATH: .github/actions
-        run: pytest .github/actions/scn-detector/tests/ -v --no-cov --tb=short
+        run: |
+          set +e
+          pytest .github/actions/scn-detector/tests/ -v --no-cov --tb=short --junit-xml=junit.xml
+          RC=$?
+          exit $RC
+      # Counts, not just a pass/fail dot: "U3 failed" could be one broken
+      # assertion or forty. The junit report gives the split and the names of
+      # what broke, so the dashboard can show severity.
+      - name: Summarise pass/fail
+        id: stats
+        if: always()
+        run: |
+          if [ ! -f junit.xml ]; then
+            echo 'stats={"total":0,"passed":0,"failed":0,"skipped":0,"failures":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, xml.etree.ElementTree as ET
+          root = ET.parse('junit.xml').getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          total = bad = skipped = 0
+          names = []
+          for s in suites:
+              total += int(s.get('tests', 0) or 0)
+              bad += int(s.get('failures', 0) or 0) + int(s.get('errors', 0) or 0)
+              skipped += int(s.get('skipped', 0) or 0)
+              for tc in s.iter('testcase'):
+                  if tc.find('failure') is not None or tc.find('error') is not None:
+                      names.append((tc.get('name') or '').replace('test_', '', 1).replace('_', ' '))
+          print('stats=' + json.dumps({
+              'total': total, 'passed': max(total - bad - skipped, 0),
+              'failed': bad, 'skipped': skipped, 'failures': sorted(set(names))[:20],
+          }))
+          PYEOF
 
   # U5: GHES static analysis
   ghes-static-analysis:
@@ -300,6 +434,10 @@ jobs:
         env:
           U1: ${{ needs.parse-container-config.result }}
           U1C: ${{ needs.parse-container-config.outputs.checks }}
+          U1S: ${{ needs.parse-container-config.outputs.stats }}
+          U2S: ${{ needs.scanner-container.outputs.stats }}
+          U3S: ${{ needs.other-scanners.outputs.stats }}
+          U4S: ${{ needs.scn-detector.outputs.stats }}
           U2C: ${{ needs.scanner-container.outputs.checks }}
           U3C: ${{ needs.other-scanners.outputs.checks }}
           U4C: ${{ needs.scn-detector.outputs.checks }}
@@ -323,20 +461,24 @@ jobs:
           safe_arr() { if [ -n "$1" ] && echo "$1" | jq empty 2>/dev/null; then echo "$1"; else echo '[]'; fi; }
           C1=$(safe_arr "${U1C:-}"); C2=$(safe_arr "${U2C:-}"); C3=$(safe_arr "${U3C:-}")
           C4=$(safe_arr "${U4C:-}"); C5=$(safe_arr "${U5C:-}")
+          safe_obj() { if [ -n "$1" ] && echo "$1" | jq -e 'type == "object"' >/dev/null 2>&1; then echo "$1"; else echo 'null'; fi; }
+          S1=$(safe_obj "${U1S:-}"); S2=$(safe_obj "${U2S:-}")
+          S3=$(safe_obj "${U3S:-}"); S4=$(safe_obj "${U4S:-}")
 
           RESULTS=$(jq -n -c \
             --argjson c1 "$C1" --argjson c2 "$C2" --argjson c3 "$C3" \
             --argjson c4 "$C4" --argjson c5 "$C5" \
+            --argjson s1 "$S1" --argjson s2 "$S2" --argjson s3 "$S3" --argjson s4 "$S4" \
             --arg u1 "$(to_status "$U1")" \
             --arg u2 "$(to_status "$U2")" \
             --arg u3 "$(to_status "$U3")" \
             --arg u4 "$(to_status "$U4")" \
             --arg u5 "$(to_status "$U5")" \
             '[
-              {"id":"U1","name":"parse-container-config","detail":"Do the parse-container-config unit tests pass for config parsing, schema validation and matrix generation?","status":$u1,"checks":$c1},
-              {"id":"U2","name":"scanner-container","detail":"Do the scanner-container unit tests pass for the trivy parser, grype parser and summary generator?","status":$u2,"checks":$c2},
-              {"id":"U3","name":"other scanner tests","detail":"Do the checkov, clamav, codeql, opengrep, trivy-iac and zap parser unit tests pass?","status":$u3,"checks":$c3},
-              {"id":"U4","name":"scn-detector tests","detail":"Do the SCN detector unit tests pass for the AI classifier, diff helpers and report generation?","status":$u4,"checks":$c4},
+              {"id":"U1","name":"parse-container-config","detail":"Do the parse-container-config unit tests pass for config parsing, schema validation and matrix generation?","status":$u1,"checks":$c1,"stats":$s1},
+              {"id":"U2","name":"scanner-container","detail":"Do the scanner-container unit tests pass for the trivy parser, grype parser and summary generator?","status":$u2,"checks":$c2,"stats":$s2},
+              {"id":"U3","name":"other scanner tests","detail":"Do the checkov, clamav, codeql, opengrep, trivy-iac and zap parser unit tests pass?","status":$u3,"checks":$c3,"stats":$s3},
+              {"id":"U4","name":"scn-detector tests","detail":"Do the SCN detector unit tests pass for the AI classifier, diff helpers and report generation?","status":$u4,"checks":$c4,"stats":$s4},
               {"id":"U5","name":"GHES static analysis","detail":"Are the container action scripts free of hardcoded github.com URLs so they work on GHES?","status":$u5,"checks":$c5}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

@@ -338,12 +338,13 @@ header h1 {
 .trend-svg { width: 100%; height: 116px; display: block; overflow: visible; }
 .ax-grid { stroke: var(--rule); stroke-width: 1; }
 .ax-lbl { font-size: 9px; fill: var(--fg3); font-family: inherit; letter-spacing: 0.04em; }
-.pt-lbl { font-size: 9px; font-weight: 700; fill: var(--fg2); font-family: inherit; }
-.pt-lbl.fail { fill: var(--fail); }
+.pt-lbl { font-size: 9px; font-weight: 600; fill: var(--fg3); font-family: inherit; }
+.pt-lbl.last { font-weight: 700; fill: var(--fg); }
 .trend-area { fill: var(--fg3); opacity: 0.12; }
 .trend-line { fill: none; stroke: var(--fg2); stroke-width: 1.5; }
-.trend-dot { fill: var(--fg); }
-.trend-dot.fail { fill: var(--fail); }
+.trend-dot { fill: var(--fg2); }
+.trend-dot.fail { fill: var(--bg); stroke: var(--fg2); stroke-width: 1.4; }
+.trend-dot.last { fill: var(--fg); }
 .trend-hit { fill: transparent; cursor: pointer; }
 .tip {
   position: absolute; background: var(--fg); color: var(--bg); border-radius: var(--radius);
@@ -424,10 +425,15 @@ td.c-q { font-size: 0.875rem; color: var(--fg); font-weight: 400; }
 td.c-q .why { color: var(--fg3); font-size: 0.78rem; margin-top: 5px; line-height: 1.55; font-weight: 300; }
 td.c-q .checks { color: var(--fg3); font-size: 0.73rem; margin-top: 6px; line-height: 1.6; font-weight: 300; }
 td.c-q .checks.empty-checks { color: var(--fail-ink); }
-td.c-q .checks .n {
+td.c-q .checks .n, td.c-q .checks .bad, td.c-q .checks .dim {
   text-transform: uppercase; letter-spacing: var(--track); font-weight: 700;
-  font-size: 0.64rem; color: var(--fg2); margin-right: 6px;
+  font-size: 0.64rem; margin-right: 8px;
 }
+td.c-q .checks .n { color: var(--fg2); }
+td.c-q .checks .bad { color: var(--fail-ink); }
+td.c-q .checks .dim { color: var(--fg3); }
+td.c-q .checks .failed-names { color: var(--fail-ink); margin-top: 3px; font-weight: 400; }
+td.c-q .checks .all-checks { margin-top: 3px; }
 td.c-cat { width: 1%; white-space: nowrap; font-size: 0.68rem; color: var(--fg3); text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; }
 td.c-lnk { width: 1%; white-space: nowrap; text-align: right; font-size: 0.68rem; text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; }
 td.c-lnk a { margin-left: 10px; border-bottom: 0; color: var(--fg3); }
@@ -478,7 +484,7 @@ footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--border
       <span class="input-wrap">
         <span class="ghost" id="ghost" aria-hidden="true"></span>
         <input id="q" type="text" autocomplete="off" autocorrect="off" spellcheck="false"
-               placeholder="Is this behaviour tested? e.g. block the build when a critical CVE is found">
+               placeholder="Is this behaviour tested?">
       </span>
       <button class="clear-btn" id="clear" type="button" title="Clear search and filters" hidden>&times;</button>
       <span class="kbd" id="kbd">/</span>
@@ -579,7 +585,8 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   const ran = {};
   d.categories.forEach(function (cat) {
     cat.tests.forEach(function (t) {
-      ran[t.id] = { status: t.status, category: cat.name, detail: t.detail, checks: t.checks };
+      ran[t.id] = { status: t.status, category: cat.name, detail: t.detail,
+                    checks: t.checks, stats: t.stats };
     });
   });
   const docs = [];
@@ -593,7 +600,8 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       status: r ? r.status : 'notrun',
       category: c.category || (r && r.category),
       file: c.file || '', line: c.line || null, why: '', scope: c.scope || 'all',
-      checks: (r && r.checks) || c.checks || null
+      checks: (r && r.checks) || c.checks || null,
+      stats: (r && r.stats) || null
     });
   });
   d.categories.forEach(function (cat) {
@@ -602,7 +610,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       docs.push({
         kind: 'test', id: t.id, name: t.name, question: t.detail || '',
         status: t.status, category: cat.name, file: '', line: null, why: '',
-        checks: t.checks || null
+        checks: t.checks || null, stats: t.stats || null
       });
     });
   });
@@ -725,7 +733,9 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   }
 
   // ----------------------------------------------------------------- trend
-  $('trend-label').textContent = 'Score by run date, last ' + hist.length + ' run' + (hist.length === 1 ? '' : 's');
+  const nFailedRuns = hist.filter(function (p) { return p.verdict !== 'PASS'; }).length;
+  $('trend-label').textContent = 'Score by run date, last ' + hist.length + ' run' +
+    (hist.length === 1 ? '' : 's') + (nFailedRuns ? ' \u00b7 \u25cb = failed run' : '');
   function drawTrend() {
     const svg = $('trend'), tip = $('tip');
     if (hist.length < 2) {
@@ -762,7 +772,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     area += ' L' + xs(hist.length - 1) + ',' + (padT + plotH) + ' Z';
     g += '<path class="trend-area" d="' + area + '"/><path class="trend-line" d="' + line + '"/>';
     hist.forEach(function (p, i) {
-      if (p.verdict !== 'PASS') g += '<circle class="trend-dot fail" cx="' + xs(i) + '" cy="' + ys(p.rate) + '" r="2.6"/>';
+      if (p.verdict !== 'PASS') g += '<circle class="trend-dot fail" cx="' + xs(i) + '" cy="' + ys(p.rate) + '" r="2.8"/>';
     });
 
     // Label each point with its score. If the runs are packed too tightly for
@@ -785,11 +795,11 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       const anchor = i === 0 ? 'start' : (i === hist.length - 1 ? 'end' : 'middle');
       // Keep the label inside the plot when the point sits near the ceiling.
       const above = ys(p.rate) - 6 > padT + 8;
-      g += '<text class="pt-lbl' + (p.verdict === 'PASS' ? '' : ' fail') + '" x="' + xs(i) +
+      g += '<text class="pt-lbl' + (i === hist.length - 1 ? ' last' : '') + '" x="' + xs(i) +
            '" y="' + (above ? ys(p.rate) - 6 : ys(p.rate) + 12) + '" text-anchor="' + anchor + '">' +
            p.rate + '</text>';
     });
-    g += '<circle class="trend-dot" cx="' + xs(hist.length - 1) + '" cy="' + ys(hist[hist.length - 1].rate) + '" r="3.2"/>';
+    g += '<circle class="trend-dot last" cx="' + xs(hist.length - 1) + '" cy="' + ys(hist[hist.length - 1].rate) + '" r="3.2"/>';
     const bw = plotW / hist.length;
     hist.forEach(function (p, i) {
       g += '<rect class="trend-hit" x="' + (xs(i) - bw / 2) + '" y="0" width="' + bw + '" height="' + H + '" data-i="' + i + '"/>';
@@ -954,6 +964,24 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   const CHECKS_SHOWN = 6;
   function checksLine(x) {
     const c = x.checks;
+    const st = x.stats;
+    // A red dot on an aggregate row says nothing about severity: one broken
+    // assertion and forty look identical. Lead with the split when we have it.
+    if (st && st.total) {
+      var summary = '<span class="n">' + st.passed + '/' + st.total + ' passed</span>';
+      if (st.failed) summary += '<span class="bad">' + st.failed + ' failed</span>';
+      if (st.skipped) summary += '<span class="dim">' + st.skipped + ' skipped</span>';
+      const names = (st.failures || []).length
+        ? '<div class="failed-names">failed: ' + st.failures.slice(0, 6).map(esc).join(' &middot; ') +
+          (st.failures.length > 6 ? ' &middot; +' + (st.failures.length - 6) + ' more' : '') + '</div>'
+        : '';
+      const rest = (c && c.length)
+        ? '<div class="all-checks" title="' + esc(c.join('\n')) + '">' +
+          c.slice(0, CHECKS_SHOWN).map(esc).join(' &middot; ') +
+          (c.length > CHECKS_SHOWN ? ' &middot; +' + (c.length - CHECKS_SHOWN) + ' more' : '') + '</div>'
+        : '';
+      return '<div class="checks">' + summary + names + rest + '</div>';
+    }
     if (c == null) return '';                       // this test has no sub-checks
     if (!c.length) {
       // It declares sub-checks but collected none: usually the paths it points
