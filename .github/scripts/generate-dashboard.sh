@@ -63,7 +63,29 @@ if [ ! -f "$HISTORY_FILE" ]; then
   echo '[]' > "$HISTORY_FILE"
 fi
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# ---------- failure classes (what a red test costs a consumer) ------------
+CLASSES_FILE="$SCRIPT_DIR/../data/failure-classes.json"
+if [ -f "$CLASSES_FILE" ] && jq empty "$CLASSES_FILE" 2>/dev/null; then
+  CLASSES_JSON=$(jq -c '{default, weights, labels, short, glossary, status, index, descriptions, classes, references}' "$CLASSES_FILE")
+else
+  CLASSES_JSON='null'
+  echo "WARNING: no readable $CLASSES_FILE — the risk score will fall back to counting failures"
+fi
+
+# Risk has to be computed here as well as in the browser, so it can be recorded
+# in history and plotted over time. Same definition: sum of class weights over
+# failing tests, with the file's default applied to anything unclassified.
+RISK=$(jq -n -c --argjson all "$ALL_JSON" --argjson fc "${CLASSES_JSON:-null}" '
+  ($fc // {}) as $f
+  | (($f.weights) // {open:10, closed:3, degraded:1}) as $w
+  | (($f.default) // "closed") as $dflt
+  | (($f.classes) // {} | to_entries | map(.value[] as $id | {key:$id, value:.key}) | from_entries) as $cls
+  | [ $all[] | select(.status == "FAIL") | ($cls[.id] // $dflt) | ($w[.] // 0) ] | add // 0')
+echo "Risk index: $RISK"
+
 CURRENT_RUN=$(jq -n -c \
+  --argjson risk "$RISK" \
   --arg date "$DATE_STR" \
   --arg scope "$SCOPE" \
   --argjson passed "$PASSED" \
@@ -72,7 +94,7 @@ CURRENT_RUN=$(jq -n -c \
   --arg verdict "$VERDICT" \
   --arg url "$RUN_URL" \
   --arg run_id "$RUN_ID" \
-  '{date:$date, scope:$scope, passed:$passed, total:$total, rate:$rate, verdict:$verdict, url:$url, run_id:$run_id}')
+  '{date:$date, scope:$scope, passed:$passed, total:$total, rate:$rate, risk:$risk, verdict:$verdict, url:$url, run_id:$run_id}')
 
 # Append and cap at 20
 jq -c --argjson run "$CURRENT_RUN" '. + [$run] | .[-20:]' "$HISTORY_FILE" > "$HISTORY_FILE.tmp"
@@ -143,7 +165,6 @@ CATEGORIES=$(jq -n -c \
 # page would answer "not tested" about something that is. The catalog is parsed
 # straight from the workflow definitions so search is complete regardless of
 # scope; run status is layered on top of it in the browser.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WF_DIR="$SCRIPT_DIR/../workflows"
 
 category_for() {
@@ -200,6 +221,7 @@ for wf in test-unit test-actions-direct test-remote test-discover test-combinati
   fi
 done
 echo "Test catalog entries: $(echo "$CATALOG_JSON" | jq 'length')"
+
 
 # ---------- coverage gaps (searchable "is this tested?" corpus) ----------
 GAPS_FILE="$SCRIPT_DIR/../data/coverage-gaps.json"
@@ -302,12 +324,13 @@ header h1 {
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 
-.hero { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(260px, 0.95fr); margin-bottom: 18px; overflow: hidden; }
+.hero { display: grid; grid-template-columns: minmax(280px, 0.85fr) minmax(300px, 1fr); margin-bottom: 14px; }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
 .hero-left { padding: 26px 28px; display: flex; flex-direction: column; gap: 16px; }
 .hero-right {
   padding: 22px 26px; border-left: 1px solid var(--border);
-  display: flex; flex-direction: column; justify-content: flex-end;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 4px;
+  min-width: 0;                     /* let the grid column actually shrink */
 }
 @media (max-width: 760px) { .hero-right { border-left: 0; border-top: 1px solid var(--border); } }
 .verdict-row { display: flex; align-items: center; gap: 18px; }
@@ -315,11 +338,113 @@ header h1 {
   font-size: 2.1rem; font-weight: 700; line-height: 1; padding: 12px 20px;
   border-radius: var(--radius); font-variant-numeric: tabular-nums; border: 1px solid transparent;
 }
-.badge.g-a, .badge.g-b { background: var(--pass-bg); color: var(--pass-ink); border-color: var(--pass); }
-.badge.g-c { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn); }
-.badge.g-d, .badge.g-f { background: var(--fail-bg); color: var(--fail-ink); border-color: var(--fail); }
-.rate { font-size: 1.7rem; font-weight: 300; line-height: 1.15; color: var(--fg); letter-spacing: -0.01em; }
-.rate .pct { display: block; font-size: 0.7rem; font-weight: 600; color: var(--fg3); text-transform: uppercase; letter-spacing: var(--track); margin-top: 4px; }
+.badge { font-size: 1.15rem; letter-spacing: 0.1em; }
+.badge.v-good { background: var(--pass-bg); color: var(--pass-ink); border-color: var(--pass); }
+.badge.v-bad  { background: var(--fail-bg); color: var(--fail-ink); border-color: var(--fail); }
+.badge.v-warn { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn); }
+.statline {
+  font-size: 0.74rem; color: var(--fg2); font-weight: 600; margin-top: 10px;
+  max-width: 44ch; line-height: 1.5;
+}
+details.working .dir {
+  font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--fg3);
+}
+.gloss { margin: 4px 0 12px; }
+.gl { font-size: 0.72rem; color: var(--fg3); line-height: 1.6; margin-bottom: 5px; max-width: 62ch; }
+.gl b { color: var(--fg2); text-transform: uppercase; letter-spacing: var(--track); font-size: 0.64rem; margin-right: 5px; }
+.rate .risk { font-size: 2.2rem; font-weight: 300; line-height: 1; letter-spacing: -0.02em; }
+table.weights th {
+  position: static; background: transparent; border-bottom: 1px solid var(--border);
+  padding: 4px 12px 4px 0; font-size: 0.6rem; color: var(--fg3);
+}
+table.weights td { padding: 4px 12px 4px 0; border-bottom: 1px solid var(--rule); font-size: 0.74rem; }
+table.weights tr.idle td { color: var(--fg3); }
+table.weights td.wc { text-transform: uppercase; letter-spacing: var(--track); font-weight: 700; font-size: 0.64rem; }
+table.weights tr.live td.wc { color: var(--fg); }
+table.weights td.ww, table.weights td.wn, table.weights td.wt {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; text-align: right;
+}
+table.weights tr.live td.wt { font-weight: 700; color: var(--fail-ink); }
+table.weights td.wd { color: var(--fg3); font-size: 0.7rem; }
+table.weights tr.total td { border-bottom: 0; border-top: 1px solid var(--border); font-weight: 700; color: var(--fg); }
+table.weights tr.total td:first-child {
+  text-transform: uppercase; letter-spacing: var(--track); font-size: 0.62rem; color: var(--fg2); font-weight: 600;
+}
+.weights-note { font-size: 0.7rem; color: var(--fg3); line-height: 1.6; max-width: 58ch; }
+sup.cite { font-size: 0.58rem; font-weight: 600; margin-left: 3px; letter-spacing: 0; }
+a.tref {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 0.94em;
+  color: inherit; border-bottom: 1px dotted currentColor;
+}
+a.tref:hover { border-bottom-style: solid; }
+/* the row you landed on marks itself, so a jump into an 87-row table lands
+   somewhere you can see */
+tr.t:target td { box-shadow: inset 0 2px 0 var(--fg), inset 0 -2px 0 var(--fg); }
+tr.t:target td.c-id { font-weight: 700; }
+sup.cite a { color: var(--fg3); border-bottom: 0; }
+sup.cite a:hover { color: var(--fg); border-bottom: 1px solid var(--fg); }
+html { scroll-behavior: smooth; }
+/* the jumped-to footnote marks itself, so a long reference list does not leave
+   the reader hunting for which line they landed on */
+.fn:target { background: var(--warn-bg); box-shadow: -8px 0 0 var(--warn-bg), 8px 0 0 var(--warn-bg); }
+.fn:target .fn-n { color: var(--warn-ink); }
+a.fn-n { border-bottom: 0; text-decoration: none; }
+a.fn-n:hover { border-bottom: 1px solid var(--fg); }
+.footnotes { margin-bottom: 14px; }
+.fn-head {
+  text-transform: uppercase; letter-spacing: var(--track); font-weight: 700;
+  font-size: 0.62rem; color: var(--fg2); margin-bottom: 8px;
+}
+.fn { display: flex; gap: 8px; font-size: 0.7rem; line-height: 1.6; margin-bottom: 7px; max-width: 92ch; }
+.fn-n { flex: none; color: var(--fg2); font-weight: 700; font-variant-numeric: tabular-nums; }
+.fn a { word-break: break-all; }
+.fn-note { display: block; color: var(--fg3); font-style: italic; }
+.foot-meta { font-size: 0.7rem; color: var(--fg3); }
+.fctag {
+  display: inline-block; margin-left: 7px; padding: 1px 6px; border-radius: var(--radius);
+  font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: var(--track);
+  border: 1px solid currentColor; vertical-align: middle;
+}
+/* Every failing row is red: colour answers "did it pass", and the tag answers
+   "how bad". Tinting by class made colour do both jobs and understated a
+   blocks-the-run failure, which still breaks the consumer's pipeline. */
+tr.fc-open .fctag, tr.fc-closed .fctag { color: var(--fail-ink); }
+tr.fc-degraded .fctag { color: var(--warn-ink); }
+.cc { font-weight: 700; }
+.cc-open, .cc-closed { color: var(--fail-ink); }
+.cc-degraded { color: var(--warn-ink); }
+.dot-sep { color: var(--border); margin: 0 8px; font-weight: 400; }
+.classline {
+  margin-top: 8px; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: var(--track);
+}
+details.working > summary {
+  cursor: pointer; font-size: 0.7rem; color: var(--fg3);
+  text-transform: uppercase; letter-spacing: var(--track); font-weight: 600;
+  padding: 4px 0; list-style: revert;
+}
+details.working > summary:hover { color: var(--fg); }
+details.working > summary b { font-variant-numeric: tabular-nums; }
+/* Colour states the direction without needing the words: any risk is red. */
+.riskv.bad { color: var(--fail-ink); }
+.riskv.good { color: var(--pass-ink); }
+.trend-line.muted { stroke: var(--fg3); stroke-width: 1.2; opacity: 0.75; }
+details.working[open] > summary { margin-bottom: 8px; }
+.refs { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.refs a { font-size: 0.7rem; }
+.rate { line-height: 1.15; color: var(--fg); }
+.bignum { font-size: 3rem; font-weight: 300; line-height: 1; letter-spacing: -0.03em; }
+.bignum.v-bad { color: var(--fail-ink); }
+.bignum.v-warn { color: var(--warn-ink); }
+.bignum.v-good { color: var(--pass-ink); }
+.bignum .unit {
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: var(--track); color: var(--fg3); margin-left: 9px; vertical-align: middle;
+}
+.bignum .dirnote {
+  display: block; font-size: 0.62rem; font-weight: 600; color: var(--fg3);
+  text-transform: uppercase; letter-spacing: var(--track); margin-top: 8px;
+}
 .delta { font-size: 0.72rem; text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; color: var(--fg3); }
 .delta.up { color: var(--pass-ink); } .delta.down { color: var(--fail-ink); }
 .stats { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -338,10 +463,23 @@ header h1 {
 .stat.warn b { color: var(--warn-ink); } .stat.idle b { color: var(--fg2); }
 .stat:hover { border-color: var(--chip); color: var(--fg2); }
 .stat[aria-pressed="true"] { border-color: var(--chip); box-shadow: inset 0 -2px 0 var(--chip); color: var(--fg); }
-.grade-note { font-size: 0.75rem; color: var(--fg3); line-height: 1.6; max-width: 52ch; }
+#grade-note { font-size: 0.75rem; color: var(--fg3); line-height: 1.6; }
 .trend-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .trend-head > span:first-child { text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; font-size: 0.68rem; color: var(--fg3); }
-.trend-svg { width: 100%; height: 116px; display: block; overflow: visible; }
+.trend-svg { width: 100%; display: block; overflow: visible; }
+#risk-trend { height: 112px; }
+#rate-trend { height: 96px; }
+.trend-head.second { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.method { padding: 18px 22px; margin-bottom: 26px; }
+.method-grid { display: grid; grid-template-columns: minmax(320px, 1.1fr) minmax(260px, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 760px) { .method-grid { grid-template-columns: 1fr; gap: 16px; } }
+.method-defs { font-size: 0.72rem; color: var(--fg3); line-height: 1.6; }
+.method-defs .gl { margin-bottom: 7px; max-width: none; }
+.method-defs .caveat {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); color: var(--fg3);
+}
+.method-defs .caveat b { color: var(--fg2); text-transform: uppercase; letter-spacing: var(--track); font-size: 0.64rem; }
+table.weights { width: 100%; max-width: none; border-collapse: collapse; margin: 0; }
 .ax-grid { stroke: var(--rule); stroke-width: 1; }
 .ax-lbl { font-size: 9px; fill: var(--fg3); font-family: inherit; letter-spacing: 0.04em; }
 .pt-lbl { font-size: 9px; font-weight: 600; fill: var(--fg3); font-family: inherit; }
@@ -444,8 +582,10 @@ td.c-cat { width: 1%; white-space: nowrap; font-size: 0.68rem; color: var(--fg3)
 td.c-lnk { width: 1%; white-space: nowrap; text-align: right; font-size: 0.68rem; text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; }
 td.c-lnk a { margin-left: 10px; border-bottom: 0; color: var(--fg3); }
 td.c-lnk a:hover { color: var(--fg); border-bottom: 1px solid var(--fg); }
-tr.t.failing td { background: var(--fail-bg); }
-tr.t.failing td.c-st { box-shadow: inset 3px 0 0 var(--fail); }
+tr.t.fc-open td, tr.t.fc-closed td { background: var(--fail-bg); }
+tr.t.fc-open td.c-st, tr.t.fc-closed td.c-st { box-shadow: inset 3px 0 0 var(--fail); }
+tr.t.fc-degraded td { background: var(--warn-bg); }
+tr.t.fc-degraded td.c-st { box-shadow: inset 3px 0 0 var(--warn); }
 tr.hidden { display: none; }
 mark { background: rgba(240,173,78,0.28); color: inherit; padding: 0 2px; }
 .empty { padding: 44px 12px; text-align: center; color: var(--fg3); font-size: 0.85rem; }
@@ -472,17 +612,19 @@ footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--border
   <section class="card hero">
     <div class="hero-left">
       <div class="verdict-row">
-        <span class="badge" id="badge"></span>
         <span class="rate" id="rate"></span>
       </div>
       <div class="stats" id="stats"></div>
-      <div class="grade-note" id="grade-note"></div>
     </div>
     <div class="hero-right">
-      <div class="trend-head"><span id="trend-label"></span><span class="delta" id="delta"></span></div>
-      <svg id="trend" class="trend-svg"></svg>
+      <div class="trend-head"><span id="risk-label">Risk index</span><span class="delta" id="risk-delta"></span></div>
+      <svg id="risk-trend" class="trend-svg"></svg>
+      <div class="trend-head second"><span id="trend-label">Pass rate</span><span class="delta" id="delta"></span></div>
+      <svg id="rate-trend" class="trend-svg"></svg>
     </div>
   </section>
+
+  <section class="card method" id="grade-note"></section>
 
   <section class="card search">
     <div class="search-row">
@@ -534,6 +676,7 @@ HTMLEOF
   echo "  selfSha: \"${SELF_SHA:-main}\","
   printf '  categories: %s,\n' "$CATEGORIES"
   printf '  gaps: %s,\n' "$GAPS_JSON"
+  printf '  failureClasses: %s,\n' "$CLASSES_JSON"
   printf '  catalog: %s,\n' "$CATALOG_JSON"
   printf '  jobs: %s,\n' "${JOBS_JSON:-[]}"
   printf '  history: %s\n' "$HISTORY_DATA"
@@ -620,12 +763,10 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       });
     });
   });
-  // Named so a reader never has to look up what the word means.
-  const KIND_CAT = {
-    untested: 'Not tested anywhere',
-    gap: 'Deliberately not tested here',
-    upstream: 'Tested by argus itself, not here'
-  };
+  // One coverage section only. "Tested by argus itself" was dropped: this suite
+  // should take no credit for coverage argus's own CI provides, and that list
+  // had no natural boundary. Each remaining gap is tracked as an issue.
+  const KIND_CAT = { gap: 'Known gaps, tracked as issues' };
   const KIND_ORDER = { untested: 0, gap: 1, upstream: 2 };
   (d.gaps || []).slice().sort(function (a, b) {
     return (KIND_ORDER[a.kind] == null ? 1 : KIND_ORDER[a.kind]) -
@@ -634,8 +775,8 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     const k = KIND_CAT[g.kind] ? g.kind : 'gap';
     docs.push({
       kind: k, id: g.id, name: g.name, question: g.question || '', status: k,
-      category: KIND_CAT[k], file: '.github/data/coverage-gaps.json',
-      line: null, why: g.why || '', ref: g.ref || ''
+      category: KIND_CAT[k], file: '', line: null,
+      why: g.why || '', ref: g.ref || '', issue: g.issue || null
     });
   });
 
@@ -662,31 +803,116 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   const ranCount = nPass + nFail;
   const rate = ranCount ? Math.round((nPass / ranCount) * 100) : 0;
 
-  // Grade is passed over every test the suite DEFINES, not just the ones that
-  // ran: a test that did not run provides no assurance, so counting only the
-  // runners would let a suite that skips most of itself score an A. Failures
-  // then cap the letter, because in a security suite "96% passing" is not an A
-  // when the 4% is a gate that stopped enforcing.
-  function gradeOf(passed, failed, defined) {
-    if (!defined) return { letter: '\u2013', score: 0 };
-    var score = (passed / defined) * 100;
-    if (failed > 0) score = Math.min(score, 89);
-    if (failed >= 3) score = Math.min(score, 79);
-    return {
-      letter: score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F',
-      score: Math.round(score)
-    };
+  // ---- verdict + risk ------------------------------------------------------
+  // Binary verdict, because a contract suite is a conformance oracle: an
+  // assertion holds or it does not, and averaging them implies a partial-credit
+  // semantics that does not exist. Alongside it, an ABSOLUTE risk score rather
+  // than a percentage -- a pass rate can be raised by writing more easy tests,
+  // while a risk total can only be lowered by fixing something.
+  //
+  //     Verdict = PASS iff failures = 0
+  //     Risk    = sum of weights over failing tests
+  //
+  // Weights come from .github/data/failure-classes.json and rank a control that
+  // fails OPEN above one that fails CLOSED, because only the first lies to you.
+  const FC = d.failureClasses || null;
+  const W = (FC && FC.weights) || { open: 10, closed: 3, degraded: 1 };
+  const CLASS_OF = {};
+  if (FC && FC.classes) {
+    Object.keys(FC.classes).forEach(function (k) {
+      (FC.classes[k] || []).forEach(function (id) { CLASS_OF[id] = k; });
+    });
   }
-  const grade = gradeOf(nPass, nFail, tests.length);
-  $('badge').className = 'badge g-' + grade.letter.toLowerCase();
-  $('badge').textContent = grade.letter;
-  $('badge').title = 'Score ' + grade.score + '/100';
-  $('rate').innerHTML = nPass + '<span class="pct">/' + tests.length + ' tests passing</span>';
+  const DEFAULT_CLASS = (FC && FC.default) || 'closed';
+  function failClass(x) { return CLASS_OF[x.id] || DEFAULT_CLASS; }
 
-  var note = 'Grade is passed \u00f7 ' + tests.length + ' defined tests.';
-  if (nIdle) note += ' The ' + nIdle + ' not run count as no assurance, not as passes.';
-  if (nFail) note += ' A failing test caps the grade at B.';
-  $('grade-note').textContent = note;
+  const failing = tests.filter(function (x) { return x.status === 'FAIL'; });
+  const byClass = { open: [], closed: [], degraded: [] };
+  failing.forEach(function (x) {
+    const c = failClass(x);
+    (byClass[c] = byClass[c] || []).push(x);
+  });
+  var risk = 0;
+  Object.keys(byClass).forEach(function (c) { risk += (W[c] || 0) * byClass[c].length; });
+
+  const ORDER = ['open', 'closed', 'degraded'];
+  const LBL = (FC && FC.labels) || { open: 'fail-open', closed: 'fail-closed', degraded: 'degraded' };
+  const SHORT = (FC && FC.short) || LBL;
+  const GLOSS = (FC && FC.glossary) || {};
+  const REFS = (FC && FC.references) || [];
+  const IDX = (FC && FC.index) || { name: 'Risk', anchor: '0 = clean' };
+  const STATUS = (FC && FC.status) || {
+    open: { word: 'FAIL', tone: 'bad', line: 'tests report success without scanning' },
+    closed: { word: 'FAIL', tone: 'bad', line: 'argus refuses to run where it should work' },
+    degraded: { word: 'FAIL', tone: 'warn', line: 'an auxiliary path is broken' },
+    none: { word: 'PASS', tone: 'good', line: 'every defined test that ran, passed' }
+  };
+
+  // Headline is the WORST CLASS PRESENT, not a total. Lexicographic ordering
+  // needs no arithmetic and makes no claim that the classes are commensurable,
+  // which a weighted sum silently does. One fail-open is disqualifying for a
+  // security gate however many other tests pass.
+  const worst = ORDER.filter(function (c) { return (byClass[c] || []).length; })[0] || 'none';
+  const st = Object.assign({}, STATUS[worst] || STATUS.none);
+  // No verdict badge: a non-zero risk already says the run failed, and the
+  // sentence below says what failed. A FAIL chip next to a red 24 is the same
+  // fact twice.
+  if (worst === 'open') {
+    const ids = (byClass.open || []).map(function (x) { return x.id; });
+    st.line = ids.length + ' test' + (ids.length === 1 ? '' : 's') +
+              ' report success without scanning. See ' + testLinks(ids) + '.';
+  }
+
+  $('rate').innerHTML =
+    '<div class="bignum v-' + (st.tone || 'good') + '">' + risk +
+      '<span class="unit">' + esc(IDX.name || 'Risk index') + '</span>' +
+      '<span class="dirnote">' + esc(IDX.direction || 'lower is better') + '</span>' +
+    '</div>' +
+    '<div class="statline">' + st.line + '</div>';
+
+  // Bracketed markers link to their footnote, and each footnote links back to
+  // the marker that cited it. A citation you cannot follow is decoration.
+  // Any test id mentioned anywhere on the page links to its row.
+  function testLink(id) {
+    return '<a class="tref" href="#row-' + esc(id) + '">' + esc(id) + '</a>';
+  }
+  function testLinks(ids) { return ids.map(testLink).join(', '); }
+
+  function citeMark(ns) {
+    return '<sup class="cite">' + ns.map(function (n) {
+      return '<a id="cite-' + n + '" href="#ref-' + n + '">[' + n + ']</a>';
+    }).join(', ') + '</sup>';
+  }
+
+  var rows = '';
+  ORDER.forEach(function (c) {
+    const n = (byClass[c] || []).length, w = W[c] || 0;
+    const ids = testLinks((byClass[c] || []).map(function (x) { return x.id; }));
+    rows += '<tr class="' + (n ? 'live' : 'idle') + '">' +
+      '<td class="wc" title="' + esc(GLOSS[c] || '') + '">' + esc(LBL[c] || c) +
+        (c === 'open' ? citeMark([1, 2]) : '') + '</td>' +
+      '<td class="ww">&times;' + w + '</td>' +
+      '<td class="wn">' + n + '</td>' +
+      '<td class="wt">' + (n * w) + '</td>' +
+      '<td class="wd">' + (ids || '&mdash;') + '</td></tr>';
+  });
+  const glossHtml = ORDER.map(function (c) {
+    return '<div class="gl"><b>' + esc(LBL[c] || c) + '</b> ' + esc(GLOSS[c] || '') + '</div>';
+  }).join('');
+
+  // Table and definitions sit side by side, both always visible: a number is
+  // only checkable if its working and its terms are on screen together.
+  $('grade-note').innerHTML =
+    '<div class="method-grid">' +
+    '<div><table class="weights"><thead><tr>' +
+      '<th>failure class</th><th>per failure</th><th>n</th><th>weight</th><th>tests</th>' +
+    '</tr></thead><tbody>' + rows +
+    '<tr class="total"><td colspan="3">risk index = &Sigma; weight</td>' +
+    '<td class="wt">' + risk + '</td><td></td></tr></tbody></table></div>' +
+    '<div class="method-defs">' + glossHtml +
+      '<div class="caveat"><b>On the index.</b> ' + esc(IDX.caveat || '') +
+      ' Each test is itself pass/fail rather than scored' + citeMark([3]) + '.</div>' +
+    '</div></div>';
 
   const hist = d.history || [];
   if (hist.length >= 2) {
@@ -695,17 +921,15 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     const el = $('delta');
     el.className = 'delta ' + (diff > 0 ? 'up' : diff < 0 ? 'down' : '');
     el.textContent = diff === 0 ? 'no change vs last run'
-      : (diff > 0 ? '▲ +' : '▼ ') + diff + ' pts vs last run';
+      : (diff > 0 ? '\u25b2 +' : '\u25bc ') + diff + ' pts vs last run';
   }
 
-  // Only this run's outcomes. gaps/untested/upstream are editorial notes from
-  // coverage-gaps.json, not results -- putting them here mixed "what happened"
-  // with "what we chose not to check", and three of the seven chips never moved
-  // between runs. They keep their own labelled sections at the foot of the table.
   const STAT_DEFS = [
-    { key: 'passing', cls: 'pass', label: 'passing', n: nPass },
-    { key: 'failing', cls: 'fail', label: 'failing', n: nFail },
-    { key: 'not-run', cls: 'idle', label: 'not run', n: nIdle }
+    { key: 'passing', cls: 'pass', label: 'of ' + tests.length + ' passing', n: nPass },
+    { key: 'not-run', cls: 'idle', label: 'not run', n: nIdle },
+    { key: 'fail-open', cls: 'fail', label: SHORT.open || 'reports success', n: (byClass.open || []).length },
+    { key: 'fail-closed', cls: 'fail', label: SHORT.closed || 'blocks', n: (byClass.closed || []).length },
+    { key: 'degraded', cls: 'warn', label: SHORT.degraded || 'degraded', n: (byClass.degraded || []).length }
   ];
   const statsEl = $('stats');
   STAT_DEFS.forEach(function (s) {
@@ -740,91 +964,141 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
 
   // ----------------------------------------------------------------- trend
   const nFailedRuns = hist.filter(function (p) { return p.verdict !== 'PASS'; }).length;
-  $('trend-label').textContent = 'Score by run date, last ' + hist.length + ' run' +
-    (hist.length === 1 ? '' : 's') + (nFailedRuns ? ' \u00b7 \u25cb = failed run' : '');
-  function drawTrend() {
-    const svg = $('trend'), tip = $('tip');
-    if (hist.length < 2) {
-      svg.innerHTML = '<text x="0" y="34" class="rel" fill="currentColor" font-size="11">Not enough runs yet</text>';
+
+  // Two series: risk first, because it is the severity signal and "going down"
+  // reads correctly for it, then pass rate for breadth. Older history entries
+  // predate the risk field, so that series plots only the points that have one.
+  const riskHist = hist.filter(function (p) { return typeof p.risk === 'number'; });
+  $('risk-label').textContent = 'Risk index';
+  if (riskHist.length >= 2) {
+    const rPrev = riskHist[riskHist.length - 2].risk, rNow = riskHist[riskHist.length - 1].risk;
+    const rd = rNow - rPrev, el = $('risk-delta');
+    el.className = 'delta ' + (rd < 0 ? 'up' : rd > 0 ? 'down' : '');   // down is good here
+    el.textContent = rd === 0 ? 'no change' : (rd < 0 ? '\u25bc ' : '\u25b2 +') + rd + ' vs last run';
+  }
+
+  function drawSeries(svgId, data, valueOf, opts) {
+    const svg = $(svgId), tip = $('tip');
+    if (!svg) return;
+    if (data.length < 2) {
+      svg.innerHTML = '<text x="0" y="30" class="ax-lbl">Not enough runs yet</text>';
       return;
     }
-    // Axes: run date along x, score along y. Without them the sparkline showed a
-    // shape but no magnitude -- you could not tell 60% from 95%.
-    const W = svg.getBoundingClientRect().width || 340, H = 116;
-    const padL = 30, padR = 10, padT = 16, padB = 20;
+    const box = svg.getBoundingClientRect();
+    const W = Math.round(box.width || svg.clientWidth || 340);
+    const H = Math.round(box.height || svg.clientHeight || opts.height || 112);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    const padL = 30, padR = 10, padT = 14, padB = 18;
     const plotW = W - padL - padR, plotH = H - padT - padB;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    const xs = function (i) { return padL + (hist.length === 1 ? plotW / 2 : i * (plotW / (hist.length - 1))); };
-    const ys = function (v) { return padT + plotH - (v / 100) * plotH; };
+    const vals = data.map(valueOf);
+    const top = opts.max != null ? opts.max : Math.max(Math.max.apply(null, vals), 1) * 1.15;
+    const floor = opts.min != null ? opts.min : 0;
+    const xs = function (i) { return padL + (data.length === 1 ? plotW / 2 : i * (plotW / (data.length - 1))); };
+    const ys = function (v) { return padT + plotH - ((v - floor) / (top - floor)) * plotH; };
     var g = '';
-
-    [0, 50, 100].forEach(function (v) {
+    (opts.ticks || [floor, top]).forEach(function (v) {
       g += '<line class="ax-grid" x1="' + padL + '" y1="' + ys(v) + '" x2="' + (W - padR) + '" y2="' + ys(v) + '"/>' +
-           '<text class="ax-lbl" x="' + (padL - 6) + '" y="' + (ys(v) + 3) + '" text-anchor="end">' + v + '</text>';
+           '<text class="ax-lbl" x="' + (padL - 6) + '" y="' + (ys(v) + 3) + '" text-anchor="end">' + Math.round(v) + '</text>';
     });
-    // First, middle and last run date -- enough to orient without crowding.
-    var ticks = hist.length > 2 ? [0, Math.floor((hist.length - 1) / 2), hist.length - 1] : [0, hist.length - 1];
+    var ticks = data.length > 2 ? [0, Math.floor((data.length - 1) / 2), data.length - 1] : [0, data.length - 1];
     ticks.filter(function (v, i, a) { return a.indexOf(v) === i; }).forEach(function (i) {
-      const d0 = String(hist[i].date || '').split(' ')[0].slice(5);   // MM-DD
-      const anchor = i === 0 ? 'start' : (i === hist.length - 1 ? 'end' : 'middle');
-      g += '<text class="ax-lbl" x="' + xs(i) + '" y="' + (H - 6) + '" text-anchor="' + anchor + '">' + esc(d0) + '</text>';
+      const d0 = String(data[i].date || '').split(' ')[0].slice(5);
+      const anchor = i === 0 ? 'start' : (i === data.length - 1 ? 'end' : 'middle');
+      g += '<text class="ax-lbl" x="' + xs(i) + '" y="' + (H - 4) + '" text-anchor="' + anchor + '">' + esc(d0) + '</text>';
     });
-
     var area = 'M' + xs(0) + ',' + (padT + plotH), line = '';
-    hist.forEach(function (p, i) {
-      area += ' L' + xs(i) + ',' + ys(p.rate);
-      line += (i ? ' L' : 'M') + xs(i) + ',' + ys(p.rate);
+    data.forEach(function (p, i) {
+      area += ' L' + xs(i) + ',' + ys(valueOf(p));
+      line += (i ? ' L' : 'M') + xs(i) + ',' + ys(valueOf(p));
     });
-    area += ' L' + xs(hist.length - 1) + ',' + (padT + plotH) + ' Z';
-    g += '<path class="trend-area" d="' + area + '"/><path class="trend-line" d="' + line + '"/>';
-    hist.forEach(function (p, i) {
-      if (p.verdict !== 'PASS') g += '<circle class="trend-dot fail" cx="' + xs(i) + '" cy="' + ys(p.rate) + '" r="2.8"/>';
+    area += ' L' + xs(data.length - 1) + ',' + (padT + plotH) + ' Z';
+    g += '<path class="trend-area" d="' + area + '"/><path class="trend-line' +
+         (opts.muted ? ' muted' : '') + '" d="' + line + '"/>';
+    data.forEach(function (p, i) {
+      if (p.verdict !== 'PASS') g += '<circle class="trend-dot fail" cx="' + xs(i) + '" cy="' + ys(valueOf(p)) + '" r="2.6"/>';
     });
-
-    // Label each point with its score. If the runs are packed too tightly for
-    // that to be readable, fall back to the points worth calling out: the
-    // newest, the best and the worst.
-    const spacing = hist.length > 1 ? plotW / (hist.length - 1) : plotW;
+    const lastI = data.length - 1;
+    g += '<circle class="trend-dot last" cx="' + xs(lastI) + '" cy="' + ys(valueOf(data[lastI])) + '" r="3"/>';
+    const spacing = plotW / (data.length - 1);
     var labelAt;
-    if (spacing >= 30) {
-      labelAt = hist.map(function (_, i) { return i; });
-    } else {
+    if (spacing >= 30) { labelAt = data.map(function (_, i) { return i; }); }
+    else {
       var best = 0, worst = 0;
-      hist.forEach(function (p, i) {
-        if (p.rate > hist[best].rate) best = i;
-        if (p.rate < hist[worst].rate) worst = i;
+      data.forEach(function (p, i) {
+        if (valueOf(p) > valueOf(data[best])) best = i;
+        if (valueOf(p) < valueOf(data[worst])) worst = i;
       });
-      labelAt = [0, best, worst, hist.length - 1];
+      labelAt = [0, best, worst, lastI];
     }
     labelAt.filter(function (v, i, a) { return a.indexOf(v) === i; }).forEach(function (i) {
-      const p = hist[i];
-      const anchor = i === 0 ? 'start' : (i === hist.length - 1 ? 'end' : 'middle');
-      // Keep the label inside the plot when the point sits near the ceiling.
-      const above = ys(p.rate) - 6 > padT + 8;
-      g += '<text class="pt-lbl' + (i === hist.length - 1 ? ' last' : '') + '" x="' + xs(i) +
-           '" y="' + (above ? ys(p.rate) - 6 : ys(p.rate) + 12) + '" text-anchor="' + anchor + '">' +
-           p.rate + '</text>';
+      const v = valueOf(data[i]);
+      const anchor = i === 0 ? 'start' : (i === lastI ? 'end' : 'middle');
+      const above = ys(v) - 5 > padT + 6;
+      g += '<text class="pt-lbl' + (i === lastI ? ' last' : '') + '" x="' + xs(i) +
+           '" y="' + (above ? ys(v) - 5 : ys(v) + 11) + '" text-anchor="' + anchor + '">' + v + '</text>';
     });
-    g += '<circle class="trend-dot last" cx="' + xs(hist.length - 1) + '" cy="' + ys(hist[hist.length - 1].rate) + '" r="3.2"/>';
-    const bw = plotW / hist.length;
-    hist.forEach(function (p, i) {
+    const bw = plotW / data.length;
+    data.forEach(function (p, i) {
       g += '<rect class="trend-hit" x="' + (xs(i) - bw / 2) + '" y="0" width="' + bw + '" height="' + H + '" data-i="' + i + '"/>';
     });
     svg.innerHTML = g;
     svg.querySelectorAll('.trend-hit').forEach(function (r) {
       r.addEventListener('mouseenter', function (e) {
-        const p = hist[+r.dataset.i];
-        tip.innerHTML = '<b>' + esc(p.date) + '</b><br>' + p.verdict + ' &middot; ' + p.passed + '/' + p.total + ' (' + p.rate + '%)';
+        const p = data[+r.dataset.i];
+        tip.innerHTML = '<b>' + esc(p.date) + '</b><br>' + p.verdict + ' &middot; ' +
+          p.passed + '/' + p.total + ' (' + p.rate + '%)' +
+          (typeof p.risk === 'number' ? '<br>risk ' + p.risk : '');
         tip.style.display = 'block';
         tip.style.left = (e.clientX + window.scrollX + 12) + 'px';
-        tip.style.top = (e.clientY + window.scrollY - 44) + 'px';
+        tip.style.top = (e.clientY + window.scrollY - 52) + 'px';
       });
       r.addEventListener('mouseleave', function () { tip.style.display = 'none'; });
-      r.addEventListener('click', function () { window.open(hist[+r.dataset.i].url, '_blank'); });
+      r.addEventListener('click', function () { window.open(data[+r.dataset.i].url, '_blank'); });
     });
   }
+
+  // A y-axis topping out at an arbitrary max(v)*1.15 produced labels like 66.
+  // Round up to a readable step instead, so the gridlines land on numbers a
+  // reader can hold in their head.
+  function niceMax(v) {
+    if (v <= 5) return 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(v)));
+    return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(function (m) { return m * mag; })
+      .filter(function (c) { return c >= v; })[0] || 10 * mag;
+  }
+
+  function drawTrend() {
+    const top = niceMax(Math.max.apply(null, riskHist.map(function (p) { return p.risk; }).concat([1])));
+    drawSeries('risk-trend', riskHist, function (p) { return p.risk; },
+               { max: top, ticks: [0, top / 2, top] });
+    // Pass rate needs a window, not a zero-based axis: with values in the 80s
+    // and 90s, starting at 0 leaves most of the panel empty. The floor is
+    // rounded down to a step and LABELLED, so the truncation is visible rather
+    // than quietly exaggerating the slope.
+    const rates = hist.map(function (p) { return p.rate; });
+    const lo = rates.length ? Math.min.apply(null, rates) : 0;
+    const rFloor = Math.max(0, Math.min(90, Math.floor((lo - 2) / 10) * 10));
+    drawSeries('rate-trend', hist, function (p) { return p.rate; },
+               { min: rFloor, max: 100,
+                 ticks: [rFloor, Math.round((rFloor + 100) / 2), 100], muted: true });
+  }
+
+
   drawTrend();
-  window.addEventListener('resize', drawTrend);
+  // Redraw when the box actually changes size. Measuring once at init read a
+  // width before layout had settled, so the viewBox disagreed with the element
+  // and the browser scaled the drawing down to fit rather than filling it.
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(function () { drawTrend(); });
+    ['risk-trend', 'rate-trend'].forEach(function (id) {
+      const el = $(id);
+      if (el) ro.observe(el);
+    });
+  } else {
+    window.addEventListener('resize', drawTrend);
+    window.addEventListener('load', drawTrend);
+  }
 
   // ------------------------------------------------------- search engine
   // Concept-aware lexical search: a domain thesaurus plus IDF-weighted term and
@@ -953,6 +1227,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       : 'Not run in this scope.';
   }
   function srcHref(x) {
+    if (x.issue) return repoUrl + '/issues/' + x.issue;   // a gap points at its issue
     if (!x.file) return null;
     return srcBase + x.file + (x.line ? '#L' + x.line : '');
   }
@@ -993,8 +1268,8 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       // It declares sub-checks but collected none: usually the paths it points
       // at have moved or been deleted upstream. Say so rather than showing
       // nothing, which reads as "no detail available".
-      return '<div class="checks empty-checks">no checks collected &mdash; ' +
-             'the paths this job runs may no longer exist upstream</div>';
+      return '<div class="checks empty-checks">no checks collected. ' +
+             'The paths this job runs may no longer exist upstream.</div>';
     }
     const head = c.slice(0, CHECKS_SHOWN).map(esc).join(' &middot; ');
     const more = c.length > CHECKS_SHOWN ? ' &middot; +' + (c.length - CHECKS_SHOWN) + ' more' : '';
@@ -1004,13 +1279,14 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
 
   function buildRow(x) {
     const tr = document.createElement('tr');
-    tr.className = 't' + (x.status === 'FAIL' ? ' failing' : '');
+    tr.id = 'row-' + x.id;
+    tr.className = 't' + (x.status === 'FAIL' ? ' failing fc-' + failClass(x) : '');
     // Definition and logs answer different questions -- "what does this test
     // assert?" vs "what did it do on this run?" -- so they get their own columns.
     const href = srcHref(x);
     const defCell = href
       ? '<a href="' + href + '" title="' + esc(x.file + (x.line ? ':' + x.line : '')) + '">' +
-        (x.kind === 'test' ? 'test &#8599;' : 'entry &#8599;') + '</a>'
+        (x.kind === 'test' ? 'test &#8599;' : '#' + (x.issue || '') + ' &#8599;') + '</a>'
       : '<span class="none">&mdash;</span>';
     const ran = x.kind === 'test' && (x.status === 'pass' || x.status === 'FAIL');
     const logCell = ran
@@ -1018,7 +1294,11 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       : '<span class="none">&mdash;</span>';
     tr.innerHTML =
       '<td class="c-st"><span class="dot ' + dotClass(x) + '" title="' + esc(statusTitle(x)) + '"></span></td>' +
-      '<td class="c-id mono">' + esc(x.id) + '</td>' +
+      '<td class="c-id mono">' + esc(x.id) +
+        (x.status === 'FAIL'
+          ? '<span class="fctag" title="' + esc((GLOSS[failClass(x)] || '')) + '">' +
+            esc(SHORT[failClass(x)] || failClass(x)) + ' &times;' + (W[failClass(x)] || 0) + '</span>'
+          : '') + '</td>' +
       '<td class="c-q"><span class="qt">' + esc(x.question || x.name) + '</span>' +
         (x.why ? '<div class="why">' + esc(x.why) + '</div>' : '') +
         (notRunNote(x) ? '<div class="why">' + esc(notRunNote(x)) + '</div>' : '') +
@@ -1069,6 +1349,9 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     'not-run': function (x) {
       return x.kind === 'test' && (x.status === 'notrun' || x.status === 'skip' || x.status === 'cancel');
     },
+    'fail-open': function (x) { return x.kind === 'test' && x.status === 'FAIL' && failClass(x) === 'open'; },
+    'fail-closed': function (x) { return x.kind === 'test' && x.status === 'FAIL' && failClass(x) === 'closed'; },
+    degraded: function (x) { return x.kind === 'test' && x.status === 'FAIL' && failClass(x) === 'degraded'; },
     tests: function (x) { return x.kind === 'test'; },
     gap: function (x) { return x.kind === 'gap'; },
     untested: function (x) { return x.kind === 'untested'; },
@@ -1163,7 +1446,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     var cls, head, sub;
     if (st.length && (!sg.length || (bestTest && bestGap && bestTest.rel >= bestGap.rel))) {
       cls = 'yes';
-      head = 'Yes &mdash; covered by ' + st.length + ' test' + (st.length > 1 ? 's' : '');
+      head = 'Yes, covered by ' + st.length + ' test' + (st.length > 1 ? 's' : '');
       const f = st.filter(function (h) { return h.doc.status === 'FAIL'; });
       const nr = st.filter(function (h) { return h.doc.status === 'notrun'; });
       sub = f.length ? f.length + ' of them ' + (f.length > 1 ? 'are' : 'is') + ' failing right now.'
@@ -1172,20 +1455,20 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     } else if (sg.length) {
       const k = sg[0].doc.kind;
       if (k === 'upstream') {
-        cls = 'maybe'; head = 'Not here &mdash; argus tests this itself';
+        cls = 'maybe'; head = 'Not here. argus tests this itself';
         sub = 'Out of scope for this suite, which checks the consumer contract. Reason in the row below.';
       } else if (k === 'untested') {
-        cls = 'no'; head = 'No &mdash; untested anywhere';
+        cls = 'no'; head = 'No, untested anywhere';
         sub = 'Covered by neither this suite nor argus CI. Reason in the row below.';
       } else {
-        cls = 'no'; head = 'No &mdash; this is a known gap';
+        cls = 'no'; head = 'No, this is a known gap';
         sub = 'Considered and deliberately untested here. Reason in the row below.';
       }
     } else if (all.length) {
-      cls = 'maybe'; head = 'Maybe &mdash; nothing matches closely';
+      cls = 'maybe'; head = 'Maybe, nothing matches closely';
       sub = 'Nearest entries below. If none fit, treat it as untested.';
     } else {
-      cls = 'no'; head = 'No match &mdash; this looks untested';
+      cls = 'no'; head = 'No match, this looks untested';
       sub = 'Consider adding a test, or a gap entry in .github/data/coverage-gaps.json.';
     }
     verdictEl.className = 'verdict show ' + cls;
@@ -1271,6 +1554,14 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     else if (e.key === 'Enter' && suggestion) { e.preventDefault(); acceptSuggestion(); }
   });
   input.addEventListener('scroll', function () { ghost.scrollLeft = input.scrollLeft; });
+  // Following a test link while a filter is active would jump to a row that is
+  // not currently rendered, so clear the query first and let the anchor resolve
+  // against the full table.
+  document.addEventListener('click', function (e) {
+    const a = e.target && e.target.closest && e.target.closest('a.tref');
+    if (!a) return;
+    if (input.value) { input.value = ''; paintGhost(); onInput(); }
+  });
   document.addEventListener('keydown', function (e) {
     if (e.key === '/' && document.activeElement !== input) { e.preventDefault(); input.focus(); }
     if (e.key === 'Escape' && document.activeElement === input) {
@@ -1278,8 +1569,18 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
     }
   });
 
-  $('foot').innerHTML = 'Generated by the test suite CI on every push to <span class="mono">main</span>. ' +
-    'Coverage gaps live in <span class="mono">.github/data/coverage-gaps.json</span>.';
+  $('foot').innerHTML =
+    '<div class="footnotes"><div class="fn-head">References</div>' +
+    REFS.map(function (r) {
+      return '<div class="fn" id="ref-' + r.n + '">' +
+             '<a class="fn-n" href="#cite-' + r.n + '" title="back to where this is cited">[' + r.n + ']</a>' +
+             '<span>' + esc(r.ieee || r.cite || '') +
+             ' <a href="' + esc(r.url) + '">' + esc(r.url) + '</a>' +
+             (r.note ? '<span class="fn-note">' + esc(r.note) + '</span>' : '') + '</span></div>';
+    }).join('') + '</div>' +
+    '<div class="foot-meta">Generated by the test suite CI on every push. ' +
+    'Weights live in <span class="mono">.github/data/failure-classes.json</span>; ' +
+    'coverage gaps in <span class="mono">.github/data/coverage-gaps.json</span>.</div>';
 
   // Theme: follow the OS by default, let the reader override, remember it.
   // Storage can throw in private windows, so every access is guarded.

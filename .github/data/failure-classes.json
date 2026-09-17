@@ -1,0 +1,143 @@
+{
+  "_comment": [
+    "What a FAILURE of each test costs a consumer. A passing test contributes",
+    "nothing; only failures score.",
+    "",
+    "Labels are deliberately plain rather than 'fail-open'/'fail-closed'. That",
+    "vocabulary inverts across domains -- in physical security a fail-SAFE door",
+    "unlocks on power loss while a fail-SECURE one locks -- so a reader from a",
+    "safety-engineering background can read the jargon backwards. 'Reports",
+    "success anyway' cannot be misread.",
+    "",
+    "The ordering is the defensible part: a control that finishes green without",
+    "doing the work is worse than one that refuses to run, because only the",
+    "first creates false assurance (Saltzer & Schroeder 1975, 'fail-safe",
+    "defaults'; CWE-636). The weights are chosen, not derived -- argue with them",
+    "here rather than in the rendering code.",
+    "",
+    "Default is 'closed': a test that goes red without a declared class is",
+    "assumed to be argus breaking loudly, not argus lying."
+  ],
+  "_status_note": [
+    "The word is the TEST OUTCOME, not a verdict on argus. A dashboard that",
+    "labels a product 'unsafe' on the strength of assertions its maintainers",
+    "have not agreed to is overstepping -- E5 and E9 encode what this suite",
+    "thinks argus should do, and that question is open. The severity lives in",
+    "the risk number, the class counts and the sentence, all of which describe",
+    "what was observed rather than what to conclude."
+  ],
+  "default": "closed",
+  "weights": {
+    "open": 10,
+    "closed": 3,
+    "degraded": 1
+  },
+  "labels": {
+    "open": "fail-open",
+    "closed": "fail-closed",
+    "degraded": "degraded"
+  },
+  "short": {
+    "open": "fail-open",
+    "closed": "fail-closed",
+    "degraded": "degraded"
+  },
+  "glossary": {
+    "open": "argus reported success without actually running the check. Nothing warns you, so unscanned code can ship looking approved.",
+    "closed": "argus stopped or errored when it should have worked. Your pipeline blocks, which is disruptive, but nothing slips past unnoticed.",
+    "degraded": "Something alongside the scan broke, such as uploading a report. The scan itself ran and the gate still held, so nothing unsafe got through."
+  },
+  "status": {
+    "open": {
+      "word": "FAIL",
+      "tone": "bad",
+      "line": "2 tests report success without scanning \u2014 see E5, E9"
+    },
+    "closed": {
+      "word": "FAIL",
+      "tone": "bad",
+      "line": "argus refuses to run where it should work"
+    },
+    "degraded": {
+      "word": "FAIL",
+      "tone": "warn",
+      "line": "an auxiliary path is broken; scans and gates still work"
+    },
+    "none": {
+      "word": "PASS",
+      "tone": "good",
+      "line": "every defined test that ran, passed"
+    }
+  },
+  "index": {
+    "name": "Risk index",
+    "direction": "lower is better",
+    "caveat": "The weights are a judgement call, not a measurement. The number adds up rather than averaging, so adding passing tests can never lower it. Only fixing a failure does."
+  },
+  "descriptions": {
+    "open": "argus reported success without actually running the check. Nothing warns you, so unscanned code can ship looking approved.",
+    "closed": "argus stopped or errored when it should have worked. Your pipeline blocks, which is disruptive, but nothing slips past unnoticed.",
+    "degraded": "Something alongside the scan broke, such as uploading a report. The scan itself ran and the gate still held, so nothing unsafe got through."
+  },
+  "classes": {
+    "open": [
+      "R6",
+      "C3",
+      "C4",
+      "C5",
+      "C6",
+      "D3",
+      "D4",
+      "E5",
+      "E8",
+      "E9",
+      "S13",
+      "S14",
+      "S18"
+    ],
+    "degraded": [
+      "E11",
+      "E14",
+      "S16",
+      "S25",
+      "U4"
+    ]
+  },
+  "references": [
+    {
+      "n": 1,
+      "ieee": "J. H. Saltzer and M. D. Schroeder, \u201cThe protection of information in computer systems,\u201d Proc. IEEE, vol. 63, no. 9, pp. 1278\u20131308, Sep. 1975.",
+      "note": "fail-safe defaults \u2014 the basis for ranking a permissive failure above a restrictive one",
+      "url": "https://web.mit.edu/Saltzer/www/publications/protection/"
+    },
+    {
+      "n": 2,
+      "ieee": "MITRE, \u201cCWE-636: Not failing securely (\u2018failing open\u2019),\u201d Common Weakness Enumeration. [Online].",
+      "note": "failing open is a named weakness class, not a local preference",
+      "url": "https://cwe.mitre.org/data/definitions/636.html"
+    },
+    {
+      "n": 3,
+      "ieee": "National Institute of Standards and Technology, \u201cAssessing security and privacy controls in information systems and organizations,\u201d NIST SP 800-53A Rev. 5, Jan. 2022. [Online].",
+      "note": "control assessment is binary \u2014 satisfied or other than satisfied \u2014 which is why each test is pass/fail rather than scored",
+      "url": "https://csrc.nist.gov/pubs/sp/800/53/a/r5/final"
+    }
+  ],
+  "_why_open": [
+    "R6, C3-C6, D3, D4, E8, S13, S14 and S18 all assert that argus FAILS a run:",
+    "a severity gate firing, a build gate firing, missing registry credentials",
+    "being rejected, an SCN category threshold being enforced. If one of them",
+    "goes red, argus let through something it was asked to stop -- the",
+    "definition of failing open.",
+    "",
+    "E5 and E9 are the same class observed directly: a scan naming no",
+    "recognised scanner, and a remote scan with an empty image_ref, both report",
+    "success having scanned nothing."
+  ],
+  "_why_degraded": [
+    "E11 and E14 are SARIF upload paths: losing them costs visibility in the",
+    "Security tab, not the scan itself. S16 is dry-run issue payloads, S25 the",
+    "optional AI fallback, U4 the SCN detector's own unit tests -- all real, none",
+    "of them a control a consumer is relying on at scan time."
+  ]
+}

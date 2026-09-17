@@ -4,127 +4,47 @@
     "kind": "gap",
     "name": "discover-mode severity gate in isolation",
     "question": "Does argus fail a discover run on the severity gate alone, with no broken build involved?",
-    "why": "Blocked on argus. tests/dockerfiles/broken/Dockerfile is in every discover run, so any run that could observe the severity gate (allow_failure=false) has already failed on the build gate. Closing this needs a search_paths input on container-scan.yml's discover step, mirroring the containers.search_paths key argus.yml already supports. Remote-mode C3-C6 walk the severity ladder in the meantime.",
-    "ref": "test-discover.yml"
+    "issue": 6,
+    "why": "Blocked on argus."
   },
   {
     "id": "GAP-2",
     "kind": "gap",
     "name": "finding counts and per-scanner status from a caller",
     "question": "Can a caller of container-scan.yml read finding counts or per-scanner status from the workflow itself?",
-    "why": "Narrowed, not closed. E12 downloads the scan artifact and asserts on its content, so the information is reachable; what is still missing is a contract. container-scan.yml declares no workflow_call outputs, so every consumer has to scrape an artifact to learn anything beyond pass/fail. Closing this needs argus to publish outputs (total, critical, high, per-scanner status) on the reusable workflow, as the scanner-container action already does.",
-    "ref": "test-edge.yml E12"
+    "issue": 7,
+    "why": "Narrowed, not closed."
   },
   {
     "id": "GAP-3",
     "kind": "gap",
     "name": "exit code for an unscannable image",
     "question": "Does argus exit non-zero when an image cannot be pulled and nothing could be scanned?",
-    "why": "Blocked on a decision in argus. container-scan.yml does not pass --fail-on-scanner-error and fail_on_severity is none, so whether a scan that could not run anything exits non-zero is undefined. R9 accepts both outcomes rather than inventing a contract. E5 and W4 probe the same question from the scanner-selection and orchestration sides. Closing this needs argus to state the behaviour; the test then asserts it.",
-    "ref": "test-remote.yml R9"
+    "issue": 8,
+    "why": "Blocked on a decision in argus."
   },
   {
     "id": "GAP-4",
     "kind": "gap",
     "name": "private registry authentication success path",
     "question": "Does argus successfully pull and scan an image from a private registry using real credentials?",
-    "why": "Blocked on credentials. E8 covers the documented failure path (registry_username set, registry_password missing). The success path needs a private image this repo can reach and a token in repository secrets. Using GHCR with the built-in GITHUB_TOKEN would work, but only against a package whose name and visibility are confirmed -- guessing one would make the test fail for a reason unrelated to argus.",
-    "ref": "test-edge.yml E8"
+    "issue": 9,
+    "why": "Blocked on credentials."
   },
   {
     "id": "GAP-5",
     "kind": "gap",
     "name": "GHES runtime behaviour",
     "question": "Does argus actually run correctly on GitHub Enterprise Server?",
-    "why": "Blocked on infrastructure. U5 and I2 grep the action scripts for hardcoded github.com URLs, which is a static check. Nothing executes against a real GHES instance, and the composite-action path GHES users are told to take is not exercised end to end. Closing this needs a GHES runner.",
-    "ref": "test-unit.yml U5"
+    "issue": 10,
+    "why": "Blocked on infrastructure."
   },
   {
     "id": "GAP-8",
     "kind": "gap",
     "name": "pull request comment rendering from a consumer",
     "question": "Does a consumer of container-scan.yml get a correctly formatted pull request comment?",
-    "why": "Blocked on a trigger. argus CI tests the security-summary action that renders and posts the comment, but no test here runs container-scan.yml in a pull_request context, so comment_marker dedup and comment updating are unexercised from a caller's side. Closing this needs a pull_request trigger on test-suite.yml plus a job that reads the PR's comments back and asserts the marker is present -- a change to when this suite runs, not just what it asserts.",
-    "ref": null
-  },
-  {
-    "id": "UP-1",
-    "kind": "upstream",
-    "name": "scanner-container and scanner-container-summary actions",
-    "question": "Do the scanner-container and scanner-container-summary composite actions work?",
-    "why": "Covered by argus CI: test-actions.yml runs both directly. Out of scope here because container-scan.yml no longer routes through them as of argus 1.x, so they are not on this suite's consumer path.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-2",
-    "kind": "upstream",
-    "name": "secret scanning (gitleaks)",
-    "question": "Does argus detect secrets committed to a repository?",
-    "why": "Covered by argus CI: the test-secrets job in test-actions.yml exercises the scanner-gitleaks action. Out of scope here; this suite tests the container and IaC scanning workflows.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-3",
-    "kind": "upstream",
-    "name": "Python SAST (bandit) and code scanning (opengrep, codeql)",
-    "question": "Does argus detect insecure Python code, or run SAST over a repository?",
-    "why": "Covered by argus CI: the test-bandit, test-opengrep and test-codeql jobs exercise those actions directly, and argus/tests holds their unit tests. Out of scope here.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-4",
-    "kind": "upstream",
-    "name": "dependency and supply-chain scanning",
-    "question": "Does argus detect vulnerable dependencies, or verify supply-chain provenance?",
-    "why": "Covered by argus CI: test-osv, test-supply-chain and test-dependency-review exercise those actions. Out of scope here.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-5",
-    "kind": "upstream",
-    "name": "DAST web application scanning (ZAP)",
-    "question": "Does argus scan a running web application for vulnerabilities?",
-    "why": "Covered by argus CI: test-zap and test-parse-zap-config exercise the ZAP action and its config parser. Out of scope here.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-6",
-    "kind": "upstream",
-    "name": "linter actions",
-    "question": "Does argus lint Dockerfiles, Python, YAML, JavaScript, JSON or Terraform?",
-    "why": "Covered by argus CI: all six linter-* actions plus linting-summary have their own jobs in test-actions.yml. Out of scope here.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-7",
-    "kind": "upstream",
-    "name": "AI summary action",
-    "question": "Does argus generate an AI summary of scan results?",
-    "why": "Covered by argus CI: test-ai-summary.yml exercises the ai-summary action. Out of scope here.",
-    "ref": "argus test-ai-summary.yml"
-  },
-  {
-    "id": "UP-8",
-    "kind": "upstream",
-    "name": "setup-argus and security-summary actions",
-    "question": "Do the setup-argus and security-summary composite actions work?",
-    "why": "Covered by argus CI: test-setup-argus and test-security-summary exercise them directly. This suite reaches both indirectly, since container-scan.yml installs argus with one and stitches its summary with the other, but does not assert on them.",
-    "ref": "argus test-actions.yml"
-  },
-  {
-    "id": "UP-9",
-    "kind": "upstream",
-    "name": "argus CLI and Python package",
-    "question": "Does the argus command line tool work when invoked directly, outside GitHub Actions?",
-    "why": "Covered by argus CI: test-unit.yml runs the full pytest suite across argus/tests with an 80% coverage gate, including test_cli.py. Out of scope here; this suite reaches the CLI only through the reusable workflows.",
-    "ref": "argus test-unit.yml"
-  },
-  {
-    "id": "UP-10",
-    "kind": "upstream",
-    "name": "container exposure and services scanners",
-    "question": "Does argus detect exposed ports or running services in a container image?",
-    "why": "Covered by argus CI: argus/tests/scanners/test_container.py and argus/tests/test_container_scanner.py exercise the exposure and services scan paths. Not reachable from this suite because container-scan.yml defaults to trivy,grype,syft and does not expose those scanner keys.",
-    "ref": "argus argus/tests"
+    "issue": 11,
+    "why": "Blocked on a trigger."
   }
 ]

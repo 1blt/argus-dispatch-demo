@@ -69,21 +69,16 @@ secrets in a repo"* &mdash; and it returns a verdict, not just a filtered list:
 
 Three things make the "no" answers trustworthy:
 
-- **Gaps are searchable, and classified.** `.github/data/coverage-gaps.json`
-  holds every known coverage hole, split three ways so a "no" is proportionate:
+- **Gaps are searchable, and tracked.** `.github/data/coverage-gaps.json` holds
+  one stub per known gap, each linking to the issue that tracks it (#6&ndash;#11).
+  Search still answers *"no, and here is why"*, but the reasoning and the work
+  live in the issue tracker where they can be assigned and closed, rather than
+  as prose on a dashboard.
 
-  | Kind | Meaning | Count |
-  |------|---------|-------|
-  | `upstream` | argus's own CI tests it; out of scope for a consumer-contract suite | 10 |
-  | `gap` | a real limitation here, not covered upstream either | 8 |
-  | `untested` | covered by nothing, here or upstream | 1 |
-
-  Most of what this suite does not test is not a hole: argus's `test-actions.yml`
-  runs 25 composite actions directly (gitleaks, bandit, ZAP, all six linters,
-  OSV, supply-chain, `setup-argus`, `security-summary`) and `test-unit.yml` runs
-  the full pytest suite behind an 80% coverage gate. The one genuine hole is
-  `reusable-security-hardening.yml`, which is referenced only by a
-  `workflow_dispatch`-only demo and so never runs anywhere.
+  What this file deliberately does **not** list is coverage argus's own CI
+  provides. An earlier version enumerated ten such entries; the list had no
+  natural boundary (argus tests ~25 composite actions plus a full pytest suite),
+  and this suite should take no credit for work it does not do.
 - **The verdict cut is relative.** A long query divides its score across more
   terms, so a fixed threshold would call a genuine match "maybe". The cut floats
   at 85% of the best hit with an absolute floor.
