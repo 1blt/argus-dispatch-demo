@@ -51,13 +51,17 @@ jobs:
       # whole pytest file behind "do the unit tests pass?". Collection is
       # best-effort and never fails the job: if the paths have moved, this comes
       # back empty and the test run below reports the breakage as usual.
+      # `-o addopts=''` clears argus's pytest.ini addopts, which include -v.
+      # That -v overrides our -q and makes --collect-only print a tree of
+      # `<Function name>` rather than `file::Class::test` node ids, so the
+      # `grep '::'` below matched nothing and every suite reported 0 checks.
       - name: Enumerate what these tests check
         id: checks
         continue-on-error: true
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov .github/actions/parse-container-config/tests/test_parse_container_config.py 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q -o addopts='' .github/actions/parse-container-config/tests/test_parse_container_config.py 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
@@ -136,13 +140,17 @@ jobs:
       # whole pytest file behind "do the unit tests pass?". Collection is
       # best-effort and never fails the job: if the paths have moved, this comes
       # back empty and the test run below reports the breakage as usual.
+      # `-o addopts=''` clears argus's pytest.ini addopts, which include -v.
+      # That -v overrides our -q and makes --collect-only print a tree of
+      # `<Function name>` rather than `file::Class::test` node ids, so the
+      # `grep '::'` below matched nothing and every suite reported 0 checks.
       - name: Enumerate what these tests check
         id: checks
         continue-on-error: true
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov argus/tests/scanners/test_trivy.py argus/tests/scanners/test_grype.py argus/tests/scanners/test_container.py argus/tests/scanners/test_vuln_parsers.py 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q -o addopts='' argus/tests/scanners/test_trivy.py argus/tests/scanners/test_grype.py argus/tests/scanners/test_container.py argus/tests/scanners/test_vuln_parsers.py 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
@@ -228,13 +236,17 @@ jobs:
       # whole pytest file behind "do the unit tests pass?". Collection is
       # best-effort and never fails the job: if the paths have moved, this comes
       # back empty and the test run below reports the breakage as usual.
+      # `-o addopts=''` clears argus's pytest.ini addopts, which include -v.
+      # That -v overrides our -q and makes --collect-only print a tree of
+      # `<Function name>` rather than `file::Class::test` node ids, so the
+      # `grep '::'` below matched nothing and every suite reported 0 checks.
       - name: Enumerate what these tests check
         id: checks
         continue-on-error: true
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov argus/tests/scanners/test_checkov.py argus/tests/scanners/test_clamav.py argus/tests/scanners/test_opengrep.py argus/tests/scanners/test_trivy_iac.py argus/tests/scanners/test_zap.py .github/actions/scanner-codeql/tests/ .github/actions/parse-zap-config/tests/ 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q -o addopts='' argus/tests/scanners/test_checkov.py argus/tests/scanners/test_clamav.py argus/tests/scanners/test_opengrep.py argus/tests/scanners/test_trivy_iac.py argus/tests/scanners/test_zap.py .github/actions/scanner-codeql/tests/ .github/actions/parse-zap-config/tests/ 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
@@ -320,13 +332,17 @@ jobs:
       # whole pytest file behind "do the unit tests pass?". Collection is
       # best-effort and never fails the job: if the paths have moved, this comes
       # back empty and the test run below reports the breakage as usual.
+      # `-o addopts=''` clears argus's pytest.ini addopts, which include -v.
+      # That -v overrides our -q and makes --collect-only print a tree of
+      # `<Function name>` rather than `file::Class::test` node ids, so the
+      # `grep '::'` below matched nothing and every suite reported 0 checks.
       - name: Enumerate what these tests check
         id: checks
         continue-on-error: true
         env:
           PYTHONPATH: .github/actions
         run: |
-          RAW=$(pytest --collect-only -q --no-cov .github/actions/scn-detector/tests/ 2>/dev/null | grep '::' || true)
+          RAW=$(pytest --collect-only -q -o addopts='' .github/actions/scn-detector/tests/ 2>/dev/null | grep '::' || true)
           CHECKS=$(printf '%s\n' "$RAW" \
             | sed -E 's/.*:://; s/\[.*$//' \
             | sed -E 's/^test_//; s/_/ /g' \
