@@ -147,7 +147,7 @@ jobs:
   # at — decide it in argus, then update this expectation to match.
   # --------------------------------------------------------------------------
   e5-no-valid-scanner:
-    name: "E5: no valid scanner (policy)"
+    name: "E5: no valid scanner (policy) [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -207,7 +207,7 @@ jobs:
   # 'failure' is the passing outcome.
   # --------------------------------------------------------------------------
   e8-auth-missing-password:
-    name: "E8: registry auth without password"
+    name: "E8: registry auth without password [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -233,7 +233,7 @@ jobs:
   # If this goes red, argus is treating skipped-everything as success.
   # --------------------------------------------------------------------------
   e9-empty-image-ref:
-    name: "E9: empty image_ref (policy)"
+    name: "E9: empty image_ref (policy) [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
