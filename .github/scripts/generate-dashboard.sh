@@ -324,16 +324,25 @@ header h1 {
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 
-.hero { display: grid; grid-template-columns: minmax(280px, 0.85fr) minmax(300px, 1fr); margin-bottom: 14px; }
-@media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
-.hero-left { padding: 26px 28px; display: flex; flex-direction: column; gap: 16px; }
-.hero-right {
-  padding: 22px 26px; border-left: 1px solid var(--border);
-  display: flex; flex-direction: column; justify-content: space-between; gap: 4px;
-  min-width: 0;                     /* let the grid column actually shrink */
+/* One card, read top to bottom: what happened, then how it is trending. The
+   two plots are equal halves so neither reads as the primary. An earlier
+   two-column split left the narrative column almost empty beside a tall
+   chart column. */
+.hero { margin-bottom: 14px; }
+/* Plots first, then what they are about: the charts carry the measurement, the
+   strip beneath names the failures behind it. */
+.hero-detail {
+  padding: 16px 24px 18px; display: flex; align-items: baseline;
+  justify-content: space-between; gap: 18px 24px; flex-wrap: wrap;
+  border-top: 1px solid var(--border);
 }
-@media (max-width: 760px) { .hero-right { border-left: 0; border-top: 1px solid var(--border); } }
-.verdict-row { display: flex; align-items: center; gap: 18px; }
+.hero-plots { display: grid; grid-template-columns: 1fr 1fr; }
+.plot { padding: 20px 24px 16px; min-width: 0; }
+.plot + .plot { border-left: 1px solid var(--border); }
+@media (max-width: 760px) {
+  .hero-plots { grid-template-columns: 1fr; }
+  .plot + .plot { border-left: 0; border-top: 1px solid var(--border); }
+}
 .badge {
   font-size: 2.1rem; font-weight: 700; line-height: 1; padding: 12px 20px;
   border-radius: var(--radius); font-variant-numeric: tabular-nums; border: 1px solid transparent;
@@ -342,10 +351,7 @@ header h1 {
 .badge.v-good { background: var(--pass-bg); color: var(--pass-ink); border-color: var(--pass); }
 .badge.v-bad  { background: var(--fail-bg); color: var(--fail-ink); border-color: var(--fail); }
 .badge.v-warn { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn); }
-.statline {
-  font-size: 0.74rem; color: var(--fg2); font-weight: 600; margin-top: 10px;
-  max-width: 44ch; line-height: 1.5;
-}
+.statline { font-size: 0.82rem; color: var(--fg2); font-weight: 600; max-width: 62ch; }
 details.working .dir {
   font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--fg3);
 }
@@ -364,9 +370,18 @@ table.weights tr.live td.wc { color: var(--fg); }
 table.weights td.ww, table.weights td.wn, table.weights td.wt {
   font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; text-align: right;
 }
-table.weights tr.live td.wt { font-weight: 700; color: var(--fail-ink); }
+/* Each contribution takes its own class colour, and the total takes the same
+   tone as the risk number heading the plot, so the two 24s are visibly the
+   same figure rather than two numbers that happen to match. */
+table.weights tr.live td.wt { font-weight: 700; }
+table.weights tr.fc-open td.wt, table.weights tr.fc-closed td.wt { color: var(--fail-ink); }
+table.weights tr.fc-degraded td.wt { color: var(--warn-ink); }
+table.weights tr.total td.wt.v-bad { color: var(--fail-ink); }
+table.weights tr.total td.wt.v-warn { color: var(--warn-ink); }
+table.weights tr.total td.wt.v-good { color: var(--pass-ink); }
 table.weights td.wd { color: var(--fg3); font-size: 0.7rem; }
-table.weights tr.total td { border-bottom: 0; border-top: 1px solid var(--border); font-weight: 700; color: var(--fg); }
+table.weights tr.total td { border-bottom: 0; border-top: 1px solid var(--fg3); font-weight: 700; color: var(--fg); }
+table.weights tr.total td.wt { font-size: 0.86rem; }
 table.weights tr.total td:first-child {
   text-transform: uppercase; letter-spacing: var(--track); font-size: 0.62rem; color: var(--fg2); font-weight: 600;
 }
@@ -432,22 +447,29 @@ details.working > summary b { font-variant-numeric: tabular-nums; }
 details.working[open] > summary { margin-bottom: 8px; }
 .refs { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
 .refs a { font-size: 0.7rem; }
-.rate { line-height: 1.15; color: var(--fg); }
-.bignum { font-size: 3rem; font-weight: 300; line-height: 1; letter-spacing: -0.03em; }
-.bignum.v-bad { color: var(--fail-ink); }
-.bignum.v-warn { color: var(--warn-ink); }
-.bignum.v-good { color: var(--pass-ink); }
-.bignum .unit {
-  font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
-  letter-spacing: var(--track); color: var(--fg3); margin-left: 9px; vertical-align: middle;
+.rate { line-height: 1.5; color: var(--fg); flex: 1 1 340px; min-width: 0; }
+.stat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+.stat-name {
+  text-transform: uppercase; letter-spacing: var(--track); font-weight: 700;
+  font-size: 0.66rem; color: var(--fg3); flex: none;
 }
+.stat-num {
+  font-size: 1.9rem; font-weight: 300; line-height: 1; letter-spacing: -0.02em;
+  color: var(--fg); font-variant-numeric: tabular-nums;
+}
+.stat-num { color: var(--fg2); }          /* neutral unless a tone says otherwise */
+.stat-num.v-bad { color: var(--fail-ink); }
+.stat-num.v-warn { color: var(--warn-ink); }
+.stat-num.v-good { color: var(--pass-ink); }
+.stat-sub { font-size: 0.66rem; color: var(--fg3); text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; }
+.stat-head .delta { margin-left: auto; }
 .bignum .dirnote {
   display: block; font-size: 0.62rem; font-weight: 600; color: var(--fg3);
   text-transform: uppercase; letter-spacing: var(--track); margin-top: 8px;
 }
 .delta { font-size: 0.72rem; text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; color: var(--fg3); }
 .delta.up { color: var(--pass-ink); } .delta.down { color: var(--fail-ink); }
-.stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.stats { display: flex; gap: 8px; flex-wrap: wrap; flex: none; }
 .stat {
   display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px;
   border-radius: var(--radius); font-size: 0.68rem; font-weight: 600;
@@ -610,17 +632,29 @@ footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--border
   </header>
 
   <section class="card hero">
-    <div class="hero-left">
-      <div class="verdict-row">
-        <span class="rate" id="rate"></span>
+    <div class="hero-plots">
+      <div class="plot">
+        <div class="stat-head">
+          <span class="stat-name" id="risk-label">Risk index</span>
+          <span class="stat-num" id="risk-num"></span>
+          <span class="stat-sub" id="risk-sub">lower is better</span>
+          <span class="delta" id="risk-delta"></span>
+        </div>
+        <svg id="risk-trend" class="trend-svg"></svg>
       </div>
-      <div class="stats" id="stats"></div>
+      <div class="plot">
+        <div class="stat-head">
+          <span class="stat-name" id="trend-label">Pass rate</span>
+          <span class="stat-num" id="rate-num"></span>
+          <span class="stat-sub" id="rate-sub"></span>
+          <span class="delta" id="delta"></span>
+        </div>
+        <svg id="rate-trend" class="trend-svg"></svg>
+      </div>
     </div>
-    <div class="hero-right">
-      <div class="trend-head"><span id="risk-label">Risk index</span><span class="delta" id="risk-delta"></span></div>
-      <svg id="risk-trend" class="trend-svg"></svg>
-      <div class="trend-head second"><span id="trend-label">Pass rate</span><span class="delta" id="delta"></span></div>
-      <svg id="rate-trend" class="trend-svg"></svg>
+    <div class="hero-detail">
+      <span class="rate" id="rate"></span>
+      <div class="stats" id="stats"></div>
     </div>
   </section>
 
@@ -852,6 +886,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   // needs no arithmetic and makes no claim that the classes are commensurable,
   // which a weighted sum silently does. One fail-open is disqualifying for a
   // security gate however many other tests pass.
+  const pctPass = tests.length ? Math.round((nPass / tests.length) * 100) : 0;
   const worst = ORDER.filter(function (c) { return (byClass[c] || []).length; })[0] || 'none';
   const st = Object.assign({}, STATUS[worst] || STATUS.none);
   // No verdict badge: a non-zero risk already says the run failed, and the
@@ -863,12 +898,23 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
               ' report success without scanning. See ' + testLinks(ids) + '.';
   }
 
-  $('rate').innerHTML =
-    '<div class="bignum v-' + (st.tone || 'good') + '">' + risk +
-      '<span class="unit">' + esc(IDX.name || 'Risk index') + '</span>' +
-      '<span class="dirnote">' + esc(IDX.direction || 'lower is better') + '</span>' +
-    '</div>' +
-    '<div class="statline">' + st.line + '</div>';
+  // Risk carries the severity colour because that is what it measures. Pass
+  // rate stays neutral: it is a breadth figure, and 95% is neither good nor bad
+  // without knowing what the missing 5% is. Green is reserved for 100%, which
+  // is the one threshold that is not arbitrary.
+  $('risk-num').textContent = risk;
+  $('risk-num').className = 'stat-num v-' + (st.tone || 'good');
+  // Pass rate never carries colour, including at 100%. It is severity-blind by
+  // construction: a silent pass and a broken SARIF upload each cost it one
+  // test. Rendering 95% green would say "good" about a state that includes two
+  // scans reporting success without scanning, which is the trap the letter
+  // grade fell into. Red would just repeat what risk already says. Uncoloured
+  // next to a coloured number reads as "I am the scale, that is the signal".
+  $('rate-num').textContent = pctPass + '%';
+  $('rate-num').className = 'stat-num';
+  $('rate-sub').textContent = nPass + '/' + tests.length;
+
+  $('rate').innerHTML = '<div class="statline">' + st.line + '</div>';
 
   // Bracketed markers link to their footnote, and each footnote links back to
   // the marker that cited it. A citation you cannot follow is decoration.
@@ -888,7 +934,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   ORDER.forEach(function (c) {
     const n = (byClass[c] || []).length, w = W[c] || 0;
     const ids = testLinks((byClass[c] || []).map(function (x) { return x.id; }));
-    rows += '<tr class="' + (n ? 'live' : 'idle') + '">' +
+    rows += '<tr class="' + (n ? 'live fc-' + c : 'idle') + '">' +
       '<td class="wc" title="' + esc(GLOSS[c] || '') + '">' + esc(LBL[c] || c) +
         (c === 'open' ? citeMark([1, 2]) : '') + '</td>' +
       '<td class="ww">&times;' + w + '</td>' +
@@ -908,7 +954,7 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       '<th>failure class</th><th>per failure</th><th>n</th><th>weight</th><th>tests</th>' +
     '</tr></thead><tbody>' + rows +
     '<tr class="total"><td colspan="3">risk index = &Sigma; weight</td>' +
-    '<td class="wt">' + risk + '</td><td></td></tr></tbody></table></div>' +
+    '<td class="wt v-' + (st.tone || 'good') + '">' + risk + '</td><td></td></tr></tbody></table></div>' +
     '<div class="method-defs">' + glossHtml +
       '<div class="caveat"><b>On the index.</b> ' + esc(IDX.caveat || '') +
       ' Each test is itself pass/fail rather than scored' + citeMark([3]) + '.</div>' +
@@ -925,7 +971,6 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   }
 
   const STAT_DEFS = [
-    { key: 'passing', cls: 'pass', label: 'of ' + tests.length + ' passing', n: nPass },
     { key: 'not-run', cls: 'idle', label: 'not run', n: nIdle },
     { key: 'fail-open', cls: 'fail', label: SHORT.open || 'reports success', n: (byClass.open || []).length },
     { key: 'fail-closed', cls: 'fail', label: SHORT.closed || 'blocks', n: (byClass.closed || []).length },
