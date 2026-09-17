@@ -336,12 +336,17 @@ header h1 {
   justify-content: space-between; gap: 18px 24px; flex-wrap: wrap;
   border-top: 1px solid var(--border);
 }
-.hero-plots { display: grid; grid-template-columns: 1fr 1fr; }
-.plot { padding: 20px 24px 16px; min-width: 0; }
-.plot + .plot { border-left: 1px solid var(--border); }
+/* Heads on row 1, charts on row 2, both spanning the same grid. Each row is
+   sized once for the whole row, so the two x axes share a baseline even if one
+   head wraps to a second line. */
+.hero-plots { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: min-content; }
+.plot-head { padding: 20px 24px 0; min-width: 0; align-self: end; }
+.plot-body { padding: 6px 24px 18px; min-width: 0; }
+.col2 { border-left: 1px solid var(--border); }
 @media (max-width: 760px) {
   .hero-plots { grid-template-columns: 1fr; }
-  .plot + .plot { border-left: 0; border-top: 1px solid var(--border); }
+  .col2 { border-left: 0; }
+  .plot-head.col2 { border-top: 1px solid var(--border); padding-top: 18px; }
 }
 .badge {
   font-size: 2.1rem; font-weight: 700; line-height: 1; padding: 12px 20px;
@@ -448,7 +453,8 @@ details.working[open] > summary { margin-bottom: 8px; }
 .refs { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
 .refs a { font-size: 0.7rem; }
 .rate { line-height: 1.5; color: var(--fg); flex: 1 1 340px; min-width: 0; }
-.stat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+.plot-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.delta { white-space: nowrap; }
 .stat-name {
   text-transform: uppercase; letter-spacing: var(--track); font-weight: 700;
   font-size: 0.66rem; color: var(--fg3); flex: none;
@@ -462,7 +468,7 @@ details.working[open] > summary { margin-bottom: 8px; }
 .stat-num.v-warn { color: var(--warn-ink); }
 .stat-num.v-good { color: var(--pass-ink); }
 .stat-sub { font-size: 0.66rem; color: var(--fg3); text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; }
-.stat-head .delta { margin-left: auto; }
+.plot-head .delta { margin-left: auto; }
 .bignum .dirnote {
   display: block; font-size: 0.62rem; font-weight: 600; color: var(--fg3);
   text-transform: uppercase; letter-spacing: var(--track); margin-top: 8px;
@@ -489,8 +495,7 @@ details.working[open] > summary { margin-bottom: 8px; }
 .trend-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .trend-head > span:first-child { text-transform: uppercase; letter-spacing: var(--track); font-weight: 600; font-size: 0.68rem; color: var(--fg3); }
 .trend-svg { width: 100%; display: block; overflow: visible; }
-#risk-trend { height: 112px; }
-#rate-trend { height: 96px; }
+#risk-trend, #rate-trend { height: 108px; }
 .trend-head.second { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .method { padding: 18px 22px; margin-bottom: 26px; }
 .method-grid { display: grid; grid-template-columns: minmax(320px, 1.1fr) minmax(260px, 1fr); gap: 28px; align-items: start; }
@@ -633,24 +638,20 @@ footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--border
 
   <section class="card hero">
     <div class="hero-plots">
-      <div class="plot">
-        <div class="stat-head">
-          <span class="stat-name" id="risk-label">Risk index</span>
-          <span class="stat-num" id="risk-num"></span>
-          <span class="stat-sub" id="risk-sub">lower is better</span>
-          <span class="delta" id="risk-delta"></span>
-        </div>
-        <svg id="risk-trend" class="trend-svg"></svg>
+      <div class="plot-head">
+        <span class="stat-name" id="risk-label">Risk index</span>
+        <span class="stat-num" id="risk-num"></span>
+        <span class="stat-sub" id="risk-sub">lower is better</span>
+        <span class="delta" id="risk-delta"></span>
       </div>
-      <div class="plot">
-        <div class="stat-head">
-          <span class="stat-name" id="trend-label">Pass rate</span>
-          <span class="stat-num" id="rate-num"></span>
-          <span class="stat-sub" id="rate-sub"></span>
-          <span class="delta" id="delta"></span>
-        </div>
-        <svg id="rate-trend" class="trend-svg"></svg>
+      <div class="plot-head col2">
+        <span class="stat-name" id="trend-label">Pass rate</span>
+        <span class="stat-num" id="rate-num"></span>
+        <span class="stat-sub" id="rate-sub"></span>
+        <span class="delta" id="delta"></span>
       </div>
+      <div class="plot-body"><svg id="risk-trend" class="trend-svg"></svg></div>
+      <div class="plot-body col2"><svg id="rate-trend" class="trend-svg"></svg></div>
     </div>
     <div class="hero-detail">
       <span class="rate" id="rate"></span>
