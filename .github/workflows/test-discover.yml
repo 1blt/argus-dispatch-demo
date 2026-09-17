@@ -23,12 +23,52 @@ permissions:
 #   - broken/Dockerfile    (FROM nonexistent — fails to pull/build)
 #
 # The discover job uses: find . -name "Dockerfile*" -not -path "./.git/*"
-# So all 3 will be found. The broken one should fail gracefully.
+# So all 3 will be found.
+#
+# ---------------------------------------------------------------------------
+# TWO GATES, NOT ONE
+# ---------------------------------------------------------------------------
+# argus 739ac35e (2026-07-09) made container-scan.yml fail closed in two
+# independent places, both keyed on allow_failure:
+#
+#   1. BUILD GATE
+#        - name: Fail if the image build failed
+#          if: steps.build.outputs.build_success != 'true'
+#              && inputs.allow_failure == false
+#
+#   2. SEVERITY GATE
+#        continue-on-error: ${{ inputs.allow_failure == true }}
+#      on the scan job, so `argus scan container`'s exit 1 surfaces.
+#
+# Before that commit the scan job was unconditionally continue-on-error, the
+# broken Dockerfile was absorbed, and every discover run returned 'success'.
+# That is why the old D1/D2 ("should succeed", allow_failure=false) were
+# passing for the wrong reason and would now fail.
+#
+# Because discover globs the entire caller repo, broken/Dockerfile is in every
+# run. So in THIS repo:
+#
+#   allow_failure=true   -> always 'success'  (both gates disarmed)
+#   allow_failure=false  -> always 'failure'  (build gate alone guarantees it)
+#
+# The suite is split along exactly that line. D4 is the useful one: severity is
+# 'none', so the severity gate cannot contribute and a 'failure' there isolates
+# the build gate. Deleting broken/Dockerfile would make D3/D4 vacuous — keep it.
+#
+# ---------------------------------------------------------------------------
+# KNOWN GAP
+# ---------------------------------------------------------------------------
+# "discover + severity gate fires, build gate does not" is NOT testable here:
+# any run that could observe the severity gate (allow_failure=false) has
+# already failed on the broken build. Isolating it needs a repo with no broken
+# Dockerfile, or a search_paths input on container-scan.yml's discover step
+# (argus.yml already has containers.search_paths; the workflow does not expose
+# it). Remote-mode C3-C6 cover the severity ladder in the meantime.
 # ============================================================================
 
 jobs:
   # --------------------------------------------------------------------------
-  # D1: Discover mixed Dockerfiles (good + vulnerable + broken)
+  # D1: Discover mixed Dockerfiles (good + vulnerable + broken), gates disarmed
   # --------------------------------------------------------------------------
   d1-discover-mixed:
     name: "D1: discover mixed"
@@ -37,10 +77,10 @@ jobs:
       scan_mode: discover
       scanners: trivy,grype
       fail_on_severity: none
-      allow_failure: false
+      allow_failure: true
 
   # --------------------------------------------------------------------------
-  # D2: Discover with trivy only
+  # D2: Discover with trivy only (scanner isolation in discover mode)
   # --------------------------------------------------------------------------
   d2-discover-trivy-only:
     name: "D2: discover trivy only"
@@ -50,19 +90,42 @@ jobs:
       scan_mode: discover
       scanners: trivy
       fail_on_severity: none
-      allow_failure: false
+      allow_failure: true
 
   # --------------------------------------------------------------------------
-  # D3: Discover with severity threshold
+  # D3: Discover fail-closed, both gates live -> workflow MUST FAIL
+  # node:14-slim carries criticals and broken/Dockerfile does not build, so
+  # either gate is sufficient. 'failure' is the passing outcome.
   # --------------------------------------------------------------------------
-  d3-discover-severity:
-    name: "D3: discover + severity"
+  d3-discover-fail-closed:
+    name: "D3: discover fail-closed"
     needs: d2-discover-trivy-only
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy,grype
       fail_on_severity: critical
+      allow_failure: false
+
+  # --------------------------------------------------------------------------
+  # D4: Build gate in isolation -> workflow MUST FAIL
+  #
+  # fail_on_severity=none disables the severity gate entirely, so the ONLY
+  # thing that can fail this run is broken/Dockerfile failing to build. This is
+  # the direct regression test for the "Fail if the image build failed" step:
+  # an unscanned container must not pass green.
+  #
+  # A 'success' here means a container that was never scanned was reported as
+  # clean — the silent-pass this gate was added to close.
+  # --------------------------------------------------------------------------
+  d4-build-gate-isolated:
+    name: "D4: build gate (severity=none)"
+    needs: d3-discover-fail-closed
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: discover
+      scanners: trivy
+      fail_on_severity: none
       allow_failure: false
 
   # --------------------------------------------------------------------------
@@ -76,14 +139,16 @@ jobs:
     needs:
       - d1-discover-mixed
       - d2-discover-trivy-only
-      - d3-discover-severity
+      - d3-discover-fail-closed
+      - d4-build-gate-isolated
     if: always()
     steps:
       - name: Validate test outcomes
         env:
           D1: ${{ needs.d1-discover-mixed.result }}
           D2: ${{ needs.d2-discover-trivy-only.result }}
-          D3: ${{ needs.d3-discover-severity.result }}
+          D3: ${{ needs.d3-discover-fail-closed.result }}
+          D4: ${{ needs.d4-build-gate-isolated.result }}
         run: |
           FAILURES=0
 
@@ -102,29 +167,23 @@ jobs:
           echo "============================================"
           echo ""
 
-          # D1: Should succeed (allow_failure handles broken build, continue-on-error on matrix)
+          # allow_failure=true — both gates disarmed, broken build tolerated
           check "D1 discover-mixed" "$D1" "success"
-
-          # D2: Should succeed (trivy only)
           check "D2 discover-trivy-only" "$D2" "success"
 
-          # D3: May fail if vulnerable image has criticals
-          # Both success and failure are valid outcomes depending on node:14 CVEs
-          if [ "$D3" = "success" ] || [ "$D3" = "failure" ]; then
-            echo "PASS D3 discover-severity: $D3 (completed - threshold applied)"
-          else
-            echo "FAIL D3 discover-severity: $D3 (unexpected state)"
-            FAILURES=$((FAILURES + 1))
-          fi
+          # allow_failure=false — fail closed
+          check "D3 discover-fail-closed" "$D3" "failure"
+          check "D4 build-gate-isolated" "$D4" "failure"
 
           echo ""
           echo "============================================"
-          TOTAL=3
+          TOTAL=4
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
 
           if [ "$FAILURES" -gt 0 ]; then
+            echo "::error::$FAILURES discover test(s) did not produce expected outcome"
             exit 1
           fi
 
@@ -134,7 +193,8 @@ jobs:
         env:
           D1: ${{ needs.d1-discover-mixed.result }}
           D2: ${{ needs.d2-discover-trivy-only.result }}
-          D3: ${{ needs.d3-discover-severity.result }}
+          D3: ${{ needs.d3-discover-fail-closed.result }}
+          D4: ${{ needs.d4-build-gate-isolated.result }}
         run: |
           to_status() {
             local got="$1" expected="$2"
@@ -150,18 +210,15 @@ jobs:
                 ;;
             esac
           }
-          # D3 accepts both success and failure
-          D3_STATUS="pass"
-          if [ "$D3" != "success" ] && [ "$D3" != "failure" ]; then
-            D3_STATUS="FAIL"
-          fi
           RESULTS=$(jq -n -c \
             --arg d1 "$(to_status "$D1" success)" \
             --arg d2 "$(to_status "$D2" success)" \
-            --arg d3 "$D3_STATUS" \
+            --arg d3 "$(to_status "$D3" failure)" \
+            --arg d4 "$(to_status "$D4" failure)" \
             '[
-              {"id":"D1","name":"discover mixed","detail":"3 Dockerfiles (good+vulnerable+broken) with trivy,grype","status":$d1},
-              {"id":"D2","name":"discover trivy only","detail":"Dockerfile discovery with trivy scanner only","status":$d2},
-              {"id":"D3","name":"discover + severity","detail":"Dockerfile discovery with critical severity threshold","status":$d3}
+              {"id":"D1","name":"discover mixed","detail":"Does argus complete a discover run over all three Dockerfiles when allow_failure is true?","status":$d1},
+              {"id":"D2","name":"discover trivy only","detail":"Does argus complete a discover run with trivy as the only scanner when allow_failure is true?","status":$d2},
+              {"id":"D3","name":"discover fail-closed","detail":"Does argus fail the workflow when a discover run hits both a broken build and criticals with allow_failure false?","status":$d3},
+              {"id":"D4","name":"build gate isolated","detail":"Does argus fail the workflow when a discovered Dockerfile does not build, even with the severity gate switched off?","status":$d4}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

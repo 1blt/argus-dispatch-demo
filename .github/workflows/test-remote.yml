@@ -23,6 +23,52 @@ permissions:
 # - Scanner isolation (R3, R4, R5)
 # - Threshold precision (R7, R11)
 # - Error handling (R8, R9)
+#
+# ---------------------------------------------------------------------------
+# SEVERITY GATE CONTRACT (argus >= 1.x)
+# ---------------------------------------------------------------------------
+# container-scan.yml gates the scan job on allow_failure:
+#
+#   continue-on-error: ${{ inputs.allow_failure == true }}
+#
+# so with allow_failure=false a tripped severity threshold now FAILS the
+# reusable workflow. It did not before argus 739ac35e (2026-07-09), when the
+# job was unconditionally continue-on-error and every threshold test returned
+# 'success' regardless of findings. Tests that exercise the gate therefore
+# assert 'failure' — that is the pass condition.
+#
+# argus gate semantics: fail when any finding has severity >= threshold
+# (argus/core/models.py:435). 'none' disables the gate entirely.
+#
+# ---------------------------------------------------------------------------
+# DETERMINISM ANCHORS
+# ---------------------------------------------------------------------------
+# Public image contents drift as new CVEs are published, so only assert a gate
+# outcome where the margin is overwhelming. Three anchors:
+#
+#   DIRTY   nginx:1.19.0                          2020 Debian buster base.
+#                                                 Trips every threshold,
+#                                                 critical included.
+#   CLEAN   gcr.io/distroless/static-debian12     No package manager DB at all,
+#                                                 so scanners report nothing.
+#                                                 Trips no threshold.
+#   UNKNOWN alpine:3.18                           EOL; finding counts drift.
+#                                                 ONLY use with
+#                                                 fail_on_severity=none,
+#                                                 allow_failure=true, or a
+#                                                 scanner that emits no
+#                                                 findings (syft).
+#
+# Never assert a gate outcome against UNKNOWN — that is what made the old R11
+# ("alpine has mediums but no criticals") an unfalsifiable guess.
+#
+# ---------------------------------------------------------------------------
+# OBSERVABILITY LIMIT
+# ---------------------------------------------------------------------------
+# container-scan.yml declares no workflow_call outputs, so a caller can only
+# observe the job result — not counts, not which scanner fired. Content-level
+# assertions require downloading the scanner-summary-container-* artifacts the
+# workflow uploads into this same run; see test-edge.yml (E12) for that pattern.
 # ============================================================================
 
 jobs:
@@ -97,8 +143,8 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
-  # R6: Vulnerable image + critical threshold -> should FAIL (TP-threshold)
-  # Uses continue-on-error so the workflow continues to the validation job
+  # R6: DIRTY + critical + allow_failure=false -> workflow MUST FAIL
+  # This is the gate-fires test. 'failure' is the passing outcome.
   # --------------------------------------------------------------------------
   r6-fail-critical:
     name: "R6: fail on critical"
@@ -168,17 +214,29 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
-  # R11: Alpine (med/low vulns) + critical threshold -> should PASS (TN-precision)
+  # R11: SBOM-only scan must never trip the severity gate.
+  #
+  # Was: alpine:3.18 + trivy,grype + critical, asserting 'success' on the
+  # premise that alpine has mediums but no criticals. That premise is not
+  # verifiable — alpine:3.18 is EOL and its critical count drifts — so the
+  # test could flip without anything in argus changing.
+  #
+  # Now asserts a property that holds by construction: syft only populates
+  # metadata["syft"], it never appends to all_findings
+  # (argus/scanners/container.py:335-340), so no finding can satisfy
+  # `severity >= low` and the gate cannot fire. Strictest real threshold,
+  # allow_failure=false, UNKNOWN image — and still deterministically 'success'.
+  # Regression target: an SBOM-only scan silently gaining a gating path.
   # --------------------------------------------------------------------------
-  r11-threshold-precision:
-    name: "R11: threshold precision"
+  r11-sbom-never-gates:
+    name: "R11: SBOM-only never gates"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
-      container_name: r11-alpine-precision
-      scanners: trivy,grype
-      fail_on_severity: critical
+      container_name: r11-syft-no-gate
+      scanners: syft
+      fail_on_severity: low
       allow_failure: false
 
   # --------------------------------------------------------------------------
@@ -214,7 +272,7 @@ jobs:
       - r8-allow-failure
       - r9-bad-image
       - r10-clean-strict
-      - r11-threshold-precision
+      - r11-sbom-never-gates
       - r12-dedup-validation
     if: always()
     steps:
@@ -230,7 +288,7 @@ jobs:
           R8: ${{ needs.r8-allow-failure.result }}
           R9: ${{ needs.r9-bad-image.result }}
           R10: ${{ needs.r10-clean-strict.result }}
-          R11: ${{ needs.r11-threshold-precision.result }}
+          R11: ${{ needs.r11-sbom-never-gates.result }}
           R12: ${{ needs.r12-dedup-validation.result }}
         run: |
           FAILURES=0
@@ -257,13 +315,12 @@ jobs:
           check "R4  remote-grype-only" "$R4" "success"
           check "R5  remote-syft-only" "$R5" "success"
 
-          # R6: container-scan.yml uses continue-on-error on scan jobs,
-          # so the reusable workflow always returns 'success' even when the
-          # scanner action triggers a severity failure. The threshold enforcement
-          # happens INSIDE the scanner-container action (exit 1), but the wrapper
-          # absorbs it. We validate R6 succeeded as a workflow (the severity check
-          # still ran and produced correct outputs — just not surfaced as workflow failure).
-          check "R6  remote-fail-critical" "$R6" "success"
+          # R6: the gate must fire. nginx:1.19.0 always carries criticals and
+          # allow_failure=false means container-scan.yml no longer absorbs the
+          # scan job's exit 1, so the reusable workflow must come back 'failure'.
+          # 'success' here means the severity gate stopped enforcing — the exact
+          # regression this test exists to catch.
+          check "R6  remote-fail-critical" "$R6" "failure"
 
           # R7 should PASS (threshold=none)
           check "R7  remote-pass-none" "$R7" "success"
@@ -271,8 +328,14 @@ jobs:
           # R8 should PASS (allow_failure=true)
           check "R8  remote-allow-failure" "$R8" "success"
 
-          # R9 may fail (bad image) - we just check it didn't cause a crash
-          # Both 'failure' and 'success' are acceptable (depends on error handling)
+          # R9 deliberately stays loose. An unpullable image makes every scanner
+          # error out, but container-scan.yml does not pass --fail-on-scanner-error
+          # to the CLI and fail_on_severity is 'none', so whether argus exits
+          # non-zero on "nothing could be scanned" is not pinned down by any
+          # contract we can point at. Both outcomes are accepted until argus
+          # states the behaviour; E5 in test-edge.yml characterises the same hole
+          # from the scanner-selection side.
+          # TIGHTEN THIS once argus documents the unscannable-image exit code.
           if [ "$R9" = "success" ] || [ "$R9" = "failure" ]; then
             echo "PASS R9  remote-bad-image: $R9 (completed without crash)"
           else
@@ -283,8 +346,9 @@ jobs:
           # R10 should PASS (clean image + strict threshold)
           check "R10 remote-clean-strict" "$R10" "success"
 
-          # R11 should PASS (medium vulns + critical threshold)
-          check "R11 remote-threshold-precision" "$R11" "success"
+          # R11 should PASS: syft emits no findings, so even fail_on_severity=low
+          # with allow_failure=false cannot trip the gate.
+          check "R11 remote-sbom-never-gates" "$R11" "success"
 
           # R12 should PASS (dedup validation)
           check "R12 remote-dedup-validation" "$R12" "success"
@@ -315,7 +379,7 @@ jobs:
           R8: ${{ needs.r8-allow-failure.result }}
           R9: ${{ needs.r9-bad-image.result }}
           R10: ${{ needs.r10-clean-strict.result }}
-          R11: ${{ needs.r11-threshold-precision.result }}
+          R11: ${{ needs.r11-sbom-never-gates.result }}
           R12: ${{ needs.r12-dedup-validation.result }}
         run: |
           to_status() {
@@ -343,7 +407,7 @@ jobs:
             --arg r3 "$(to_status "$R3" success)" \
             --arg r4 "$(to_status "$R4" success)" \
             --arg r5 "$(to_status "$R5" success)" \
-            --arg r6 "$(to_status "$R6" success)" \
+            --arg r6 "$(to_status "$R6" failure)" \
             --arg r7 "$(to_status "$R7" success)" \
             --arg r8 "$(to_status "$R8" success)" \
             --arg r9 "$R9_STATUS" \
@@ -351,17 +415,17 @@ jobs:
             --arg r11 "$(to_status "$R11" success)" \
             --arg r12 "$(to_status "$R12" success)" \
             '[
-              {"id":"R1","name":"vuln + all scanners","detail":"nginx:1.19.0 with trivy,grype,syft — TP detection","status":$r1},
-              {"id":"R2","name":"clean image","detail":"distroless/static-debian12 — TN detection","status":$r2},
-              {"id":"R3","name":"trivy only","detail":"alpine:3.18 scanner isolation (trivy)","status":$r3},
-              {"id":"R4","name":"grype only","detail":"alpine:3.18 scanner isolation (grype)","status":$r4},
-              {"id":"R5","name":"syft only","detail":"alpine:3.18 SBOM-only generation (syft)","status":$r5},
-              {"id":"R6","name":"fail on critical","detail":"nginx:1.19.0 + critical threshold enforcement","status":$r6},
-              {"id":"R7","name":"pass with none threshold","detail":"nginx:1.19.0 + threshold=none — TN threshold","status":$r7},
-              {"id":"R8","name":"allow failure","detail":"nginx:1.19.0 + allow_failure=true override","status":$r8},
-              {"id":"R9","name":"bad image","detail":"nonexistent/nosuchimage — graceful error handling","status":$r9},
-              {"id":"R10","name":"clean + strict threshold","detail":"distroless + low threshold — TN precision","status":$r10},
-              {"id":"R11","name":"threshold precision","detail":"alpine:3.18 med vulns + critical threshold — TN precision","status":$r11},
-              {"id":"R12","name":"dedup validation","detail":"nginx:1.19.0 trivy+grype cross-scanner deduplication","status":$r12}
+              {"id":"R1","name":"vuln + all scanners","detail":"Does argus report vulnerabilities when nginx:1.19.0 is scanned with trivy, grype and syft together?","status":$r1},
+              {"id":"R2","name":"clean image","detail":"Does argus report no findings when the packageless distroless/static-debian12 image is scanned?","status":$r2},
+              {"id":"R3","name":"trivy only","detail":"Does argus complete a scan when trivy is the only scanner selected?","status":$r3},
+              {"id":"R4","name":"grype only","detail":"Does argus complete a scan when grype is the only scanner selected?","status":$r4},
+              {"id":"R5","name":"syft only","detail":"Does argus generate an SBOM when syft is the only scanner selected?","status":$r5},
+              {"id":"R6","name":"fail on critical","detail":"Does argus fail the workflow when nginx:1.19.0 carries criticals, fail_on_severity is critical and allow_failure is false?","status":$r6},
+              {"id":"R7","name":"pass with none threshold","detail":"Does argus let a vulnerable image pass when fail_on_severity is none?","status":$r7},
+              {"id":"R8","name":"allow failure","detail":"Does argus let a vulnerable image pass the high threshold when allow_failure is true?","status":$r8},
+              {"id":"R9","name":"bad image","detail":"Does argus handle an image reference that cannot be pulled without crashing the workflow?","status":$r9},
+              {"id":"R10","name":"clean + strict threshold","detail":"Does argus let the clean distroless image pass even at the strictest low threshold?","status":$r10},
+              {"id":"R11","name":"SBOM-only never gates","detail":"Does argus let a syft-only scan pass at the low threshold, given an SBOM produces no findings to gate on?","status":$r11},
+              {"id":"R12","name":"dedup validation","detail":"Does argus deduplicate the CVEs that trivy and grype both report for nginx:1.19.0?","status":$r12}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
