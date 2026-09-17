@@ -25,7 +25,7 @@ permissions:
 # cell is interpretable:
 #
 #   CONTRACT    Documented behaviour. A red means argus regressed.
-#               E1, E2, E3, E4, E6, E7, E8, E10, E11, E12
+#               E1, E2, E3, E6, E7, E8, E10, E11, E12, E13, E14
 #
 #   POLICY      argus has no stated contract; this asserts the security-correct
 #               outcome. A red is an open question for argus, not a broken
@@ -112,37 +112,24 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
-  # E3: Whitespace in the scanners list
+  # E3: A scanners list a human would plausibly type
   #
-  # argus normalises with [s.strip().lower() for s in raw.split(",") if s.strip()]
-  # (argus/scanners/container.py:423). A human editing a workflow writes
-  # "trivy, grype". This pins that the normalisation stays.
+  # argus normalises with
+  #   [s.strip().lower() for s in raw.split(",") if s.strip()]
+  # (argus/scanners/container.py:423), so one input exercises the whole
+  # normaliser: padding, mixed case, and the same scanner named twice.
+  #
+  # This was two tests, E3 for whitespace and E4 for duplicates, against the
+  # same image with the same expectation. They covered one code path twice.
   # --------------------------------------------------------------------------
-  e3-scanner-whitespace:
-    name: "E3: whitespace in scanners"
+  e3-scanner-normalisation:
+    name: "E3: messy scanners list normalises"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: gcr.io/distroless/static-debian12:latest
-      container_name: e3-whitespace
-      scanners: "  trivy , grype  "
-      fail_on_severity: none
-      allow_failure: false
-
-  # --------------------------------------------------------------------------
-  # E4: Duplicate and mixed-case scanner names
-  #
-  # Same normaliser, other half: .lower() plus membership tests mean a scanner
-  # named three times must still run once and not error.
-  # --------------------------------------------------------------------------
-  e4-scanner-duplicates:
-    name: "E4: duplicate + mixed-case scanners"
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: remote
-      image_ref: gcr.io/distroless/static-debian12:latest
-      container_name: e4-duplicates
-      scanners: trivy,TRIVY,Trivy
+      container_name: e3-normalisation
+      scanners: "  trivy , TRIVY ,grype,  Trivy  "
       fail_on_severity: none
       allow_failure: false
 
@@ -414,8 +401,7 @@ jobs:
     needs:
       - e1-digest-pinned
       - e2-fully-qualified
-      - e3-scanner-whitespace
-      - e4-scanner-duplicates
+      - e3-scanner-normalisation
       - e5-no-valid-scanner
       - e6-partial-typo
       - e7-name-sanitisation
@@ -432,8 +418,7 @@ jobs:
         env:
           E1: ${{ needs.e1-digest-pinned.result }}
           E2: ${{ needs.e2-fully-qualified.result }}
-          E3: ${{ needs.e3-scanner-whitespace.result }}
-          E4: ${{ needs.e4-scanner-duplicates.result }}
+          E3: ${{ needs.e3-scanner-normalisation.result }}
           E5: ${{ needs.e5-no-valid-scanner.result }}
           E6: ${{ needs.e6-partial-typo.result }}
           E7: ${{ needs.e7-name-sanitisation.result }}
@@ -465,8 +450,7 @@ jobs:
           echo "-- CONTRACT: input handling --"
           check "E1  digest-pinned image" "$E1" "success"
           check "E2  fully-qualified host" "$E2" "success"
-          check "E3  whitespace in scanners" "$E3" "success"
-          check "E4  duplicate scanners" "$E4" "success"
+          check "E3  messy scanners list normalises" "$E3" "success"
           check "E6  valid + typo'd scanner" "$E6" "success"
           check "E7  container_name sanitisation" "$E7" "success"
           echo ""
@@ -489,7 +473,7 @@ jobs:
 
           echo ""
           echo "============================================"
-          TOTAL=14
+          TOTAL=13
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -505,8 +489,7 @@ jobs:
         env:
           E1: ${{ needs.e1-digest-pinned.result }}
           E2: ${{ needs.e2-fully-qualified.result }}
-          E3: ${{ needs.e3-scanner-whitespace.result }}
-          E4: ${{ needs.e4-scanner-duplicates.result }}
+          E3: ${{ needs.e3-scanner-normalisation.result }}
           E5: ${{ needs.e5-no-valid-scanner.result }}
           E6: ${{ needs.e6-partial-typo.result }}
           E7: ${{ needs.e7-name-sanitisation.result }}
@@ -536,7 +519,6 @@ jobs:
             --arg e1 "$(to_status "$E1" success)" \
             --arg e2 "$(to_status "$E2" success)" \
             --arg e3 "$(to_status "$E3" success)" \
-            --arg e4 "$(to_status "$E4" success)" \
             --arg e5 "$(to_status "$E5" failure)" \
             --arg e6 "$(to_status "$E6" success)" \
             --arg e7 "$(to_status "$E7" success)" \
@@ -550,8 +532,7 @@ jobs:
             '[
               {"id":"E1","name":"digest-pinned image","detail":"Does argus scan an image that is referenced by digest rather than by tag?","status":$e1},
               {"id":"E2","name":"fully-qualified host","detail":"Does argus scan an image that is referenced by a fully-qualified registry host?","status":$e2},
-              {"id":"E3","name":"whitespace in scanners","detail":"Does argus accept a scanners list that is padded with spaces?","status":$e3},
-              {"id":"E4","name":"duplicate + mixed-case scanners","detail":"Does argus accept a scanners list that repeats one scanner in mixed case?","status":$e4},
+              {"id":"E3","name":"whitespace in scanners","detail":"Does argus accept a scanners list that is padded, mixed case, and repeats a scanner?","status":$e3},
               {"id":"E5","name":"no valid scanner","detail":"Does argus fail the workflow when the scanners list names nothing it recognises, so no scanner runs?","status":$e5},
               {"id":"E6","name":"valid plus unknown scanner","detail":"Does argus still run trivy when the scanners list also contains a name it does not recognise?","status":$e6},
               {"id":"E7","name":"container_name sanitisation","detail":"Does argus complete a scan when container_name contains a slash, a space and capital letters?","status":$e7},

@@ -196,7 +196,7 @@ flowchart TD
     SUM5 -->|no| SUM7["step summary only"]
 ```
 
-## Test Matrix (87 tests)
+## Test Matrix (81 tests)
 
 ### Reading the expectations
 
@@ -237,7 +237,6 @@ asserted where the margin is overwhelming:
 | # | Test | Image | Scanners | Severity | allow_failure | Expected | Category |
 |---|------|-------|----------|----------|---------------|----------|----------|
 | R1 | remote-vuln-all-scanners | nginx:1.19.0 | trivy,grype,syft | none | false | PASS, vulns found | TP-detect |
-| R2 | remote-clean-image | distroless/static-debian12 | trivy,grype | none | false | PASS, no findings | TN-detect |
 | R3 | remote-trivy-only | alpine:3.18 | trivy | none | false | PASS, trivy only | scanner isolation |
 | R4 | remote-grype-only | alpine:3.18 | grype | none | false | PASS, grype only | scanner isolation |
 | R5 | remote-syft-only | alpine:3.18 | syft | none | false | PASS, SBOM only | scanner isolation |
@@ -247,7 +246,7 @@ asserted where the margin is overwhelming:
 | R9 | remote-bad-image | nonexistent/nosuchimage:v0 | trivy | none | false | Graceful error | error handling |
 | R10 | remote-clean-strict | distroless/static-debian12 | trivy,grype | low | false | PASS | TN-threshold |
 | R11 | remote-sbom-never-gates | alpine:3.18 | syft | low | false | PASS (SBOM emits no findings) | TN-precision |
-| R12 | remote-dedup-validation | nginx:1.19.0 | trivy,grype | none | false | PASS + dedup verified | dedup logic |
+| R12 | remote-dedup-validation | nginx:1.19.0 | trivy,grype | none | false | PASS, **unique < total asserted from the report** | dedup logic |
 
 ### Discover Mode Tests — `test-discover.yml`
 
@@ -302,11 +301,7 @@ assertions (E12) are what upgrade that.
 | C8 | remote | trivy+grype | critical | true | nginx:1.19.0 | Multi-scanner + allow_failure |
 | C9 | remote | grype | low | true | distroless | grype + allow_failure + clean |
 | C10 | discover | trivy | medium | true | — | discover + allow_failure |
-| C11 | discover | grype | low | true | — | discover + grype only |
-| C12 | discover | trivy+grype+syft | none | true | — | discover + all scanners |
-| C13 | discover | syft | high | true | — | discover + syft only |
 | C14 | remote | trivy+grype+syft | high | true | alpine:3.18 | All scanners + threshold + allow |
-| C15 | remote | trivy+grype | medium | false | distroless | medium TN on clean |
 
 ### Edge & Adversarial Tests — `test-edge.yml`
 
@@ -328,8 +323,7 @@ Two labels, so a red cell is interpretable:
 |---|------|------|----------|----------|
 | E1 | digest-pinned image | CONTRACT | `nginx@sha256:...`, digest resolved at runtime | PASS |
 | E2 | fully-qualified host | CONTRACT | `docker.io/library/alpine:3.18` vs the short form | PASS |
-| E3 | whitespace in scanners | CONTRACT | `"  trivy , grype  "` must normalise | PASS |
-| E4 | duplicate + mixed case | CONTRACT | `trivy,TRIVY,Trivy` runs trivy once | PASS |
+| E3 | messy scanners list | CONTRACT | padding, mixed case and a repeat in one input | PASS |
 | E5 | no valid scanner | POLICY | `scanners: bogusscanner` — nothing runs | **FAIL** expected |
 | E6 | valid + typo'd scanner | CONTRACT | `trivy,bogusscanner` — unknown name dropped | PASS |
 | E7 | container_name sanitisation | CONTRACT | `"Edge/Case Name"` through artifact naming | PASS |
@@ -498,6 +492,23 @@ syft x severity is now covered rather than dismissed: R11 (syft x low) and C7
 worth pinning precisely *because* syft does no vulnerability scanning — it is
 what stops an SBOM run from silently gaining a gating path. The remaining gaps
 are the other syft-involving cells.
+
+## On redundancy
+
+The suite was pruned once its parameter matrix was tabulated rather than read.
+Six tests went, none of them losing coverage:
+
+| Removed | Because |
+|---------|---------|
+| R2, C15 | same image and scanners as R10 at looser thresholds, so R10 subsumes both |
+| C11, C12, C13 | all discover with `allow_failure: true`, which disarms both gates, so the scanner and severity differences could not change the outcome. Three tests asserting what C10 already asserts, at roughly 18 runner jobs |
+| E4 | the same normaliser as E3, on the same image, with the same expectation. E3 now carries padding, mixed case and a repeat in one input |
+
+R12 stayed but was rewritten. It had parameters byte-identical to R7 and checked
+only that the job returned success, so its stated purpose &mdash; cross-scanner
+deduplication &mdash; was never exercised. It now reads the scan report and
+asserts the unique count came out below the total, which is what
+deduplication means.
 
 ## Gaps and Open Questions
 
