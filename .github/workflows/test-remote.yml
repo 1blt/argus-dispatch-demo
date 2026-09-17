@@ -87,20 +87,6 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
-  # R2: Clean image (TN-detect)
-  # --------------------------------------------------------------------------
-  r2-clean-image:
-    name: "R2: clean image"
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: remote
-      image_ref: gcr.io/distroless/static-debian12:latest
-      container_name: r2-distroless-clean
-      scanners: trivy,grype
-      fail_on_severity: none
-      allow_failure: false
-
-  # --------------------------------------------------------------------------
   # R3: Trivy only (scanner isolation)
   # --------------------------------------------------------------------------
   r3-trivy-only:
@@ -240,7 +226,16 @@ jobs:
       allow_failure: false
 
   # --------------------------------------------------------------------------
-  # R12: Deduplication validation (cross-scanner dedup)
+  # R12: Deduplication, actually asserted
+  #
+  # This test previously carried byte-identical parameters to R7 and checked
+  # only that the job returned success, so its stated purpose -- cross-scanner
+  # deduplication -- was never exercised. It passed for years without testing
+  # the thing it is named after.
+  #
+  # nginx:1.19.0 scanned by trivy AND grype is guaranteed to surface the same
+  # CVEs twice, so the report's unique count must come out below its total. The
+  # assertion lives in r12-assert-dedup below, which reads the scan artifact.
   # --------------------------------------------------------------------------
   r12-dedup-validation:
     name: "R12: dedup validation"
@@ -253,6 +248,67 @@ jobs:
       fail_on_severity: none
       allow_failure: false
 
+  r12-assert-dedup:
+    name: "R12a: assert dedup happened"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: r12-dedup-validation
+    if: always()
+    outputs:
+      status: ${{ steps.assert.outputs.status }}
+    steps:
+      - name: Download the R12 container summary
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scanner-summary-container-r12-nginx-dedup
+          path: ./r12-summary
+
+      - name: Assert the report deduplicates across scanners
+        id: assert
+        run: |
+          set -uo pipefail
+          STATUS="pass"
+          fail() { echo "::error::$1"; STATUS="FAIL"; }
+
+          if [ "${{ steps.download.outcome }}" != "success" ]; then
+            fail "R12 produced no scan artifact, so dedup could not be checked"
+          else
+            REPORT=$(find ./r12-summary -type f -name '*.md' | head -n 1)
+            if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+              fail "R12 artifact holds no readable markdown report"
+            else
+              echo "----- report -----"; cat "$REPORT"; echo "------------------"
+
+              # The container reporter emits a deduplicated combined section and
+              # a breakdown carrying total and unique counts per container.
+              if ! grep -qiE 'combined \(deduplicated\)|combined findings' "$REPORT"; then
+                fail "Report has no combined/deduplicated section. If the report format changed, update this assertion rather than dropping it."
+              fi
+
+              # Pull the first "| <total> | <unique> |" pair from the breakdown.
+              NUMS=$(grep -oE '\| *[0-9]+ *\| *[0-9]+ *\|' "$REPORT" | head -n 1 | tr -dc '0-9 ')
+              TOTAL=$(echo "$NUMS" | awk '{print $1}')
+              UNIQUE=$(echo "$NUMS" | awk '{print $2}')
+              if [ -z "${TOTAL:-}" ] || [ -z "${UNIQUE:-}" ]; then
+                fail "Could not read total and unique counts from the report"
+              else
+                echo "total=$TOTAL unique=$UNIQUE"
+                if [ "$UNIQUE" -gt "$TOTAL" ]; then
+                  fail "unique ($UNIQUE) exceeds total ($TOTAL), which cannot happen after deduplication"
+                elif [ "$UNIQUE" -eq "$TOTAL" ]; then
+                  fail "unique equals total ($TOTAL): trivy and grype both scanned nginx:1.19.0 and nothing was deduplicated"
+                else
+                  echo "Deduplication removed $((TOTAL - UNIQUE)) duplicate finding(s)"
+                fi
+              fi
+            fi
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "pass" ] || exit 1
+
   # --------------------------------------------------------------------------
   # Validation job: verify expected outcomes
   # --------------------------------------------------------------------------
@@ -263,7 +319,6 @@ jobs:
       results: ${{ steps.collect.outputs.results }}
     needs:
       - r1-vuln-all-scanners
-      - r2-clean-image
       - r3-trivy-only
       - r4-grype-only
       - r5-syft-only
@@ -274,12 +329,12 @@ jobs:
       - r10-clean-strict
       - r11-sbom-never-gates
       - r12-dedup-validation
+      - r12-assert-dedup
     if: always()
     steps:
       - name: Validate test outcomes
         env:
           R1: ${{ needs.r1-vuln-all-scanners.result }}
-          R2: ${{ needs.r2-clean-image.result }}
           R3: ${{ needs.r3-trivy-only.result }}
           R4: ${{ needs.r4-grype-only.result }}
           R5: ${{ needs.r5-syft-only.result }}
@@ -289,7 +344,7 @@ jobs:
           R9: ${{ needs.r9-bad-image.result }}
           R10: ${{ needs.r10-clean-strict.result }}
           R11: ${{ needs.r11-sbom-never-gates.result }}
-          R12: ${{ needs.r12-dedup-validation.result }}
+          R12: ${{ needs.r12-assert-dedup.result }}
         run: |
           FAILURES=0
 
@@ -310,7 +365,6 @@ jobs:
 
           # Tests that should succeed
           check "R1  remote-vuln-all-scanners" "$R1" "success"
-          check "R2  remote-clean-image" "$R2" "success"
           check "R3  remote-trivy-only" "$R3" "success"
           check "R4  remote-grype-only" "$R4" "success"
           check "R5  remote-syft-only" "$R5" "success"
@@ -355,7 +409,7 @@ jobs:
 
           echo ""
           echo "============================================"
-          TOTAL=12
+          TOTAL=11
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -370,7 +424,6 @@ jobs:
         if: always()
         env:
           R1: ${{ needs.r1-vuln-all-scanners.result }}
-          R2: ${{ needs.r2-clean-image.result }}
           R3: ${{ needs.r3-trivy-only.result }}
           R4: ${{ needs.r4-grype-only.result }}
           R5: ${{ needs.r5-syft-only.result }}
@@ -380,7 +433,7 @@ jobs:
           R9: ${{ needs.r9-bad-image.result }}
           R10: ${{ needs.r10-clean-strict.result }}
           R11: ${{ needs.r11-sbom-never-gates.result }}
-          R12: ${{ needs.r12-dedup-validation.result }}
+          R12: ${{ needs.r12-assert-dedup.result }}
         run: |
           to_status() {
             local got="$1" expected="$2"
@@ -403,7 +456,6 @@ jobs:
           fi
           RESULTS=$(jq -n -c \
             --arg r1 "$(to_status "$R1" success)" \
-            --arg r2 "$(to_status "$R2" success)" \
             --arg r3 "$(to_status "$R3" success)" \
             --arg r4 "$(to_status "$R4" success)" \
             --arg r5 "$(to_status "$R5" success)" \
@@ -416,7 +468,6 @@ jobs:
             --arg r12 "$(to_status "$R12" success)" \
             '[
               {"id":"R1","name":"vuln + all scanners","detail":"Does argus report vulnerabilities when nginx:1.19.0 is scanned with trivy, grype and syft together?","status":$r1},
-              {"id":"R2","name":"clean image","detail":"Does argus report no findings when the packageless distroless/static-debian12 image is scanned?","status":$r2},
               {"id":"R3","name":"trivy only","detail":"Does argus complete a scan when trivy is the only scanner selected?","status":$r3},
               {"id":"R4","name":"grype only","detail":"Does argus complete a scan when grype is the only scanner selected?","status":$r4},
               {"id":"R5","name":"syft only","detail":"Does argus generate an SBOM when syft is the only scanner selected?","status":$r5},
@@ -426,6 +477,6 @@ jobs:
               {"id":"R9","name":"bad image","detail":"Does argus handle an image reference that cannot be pulled without crashing the workflow?","status":$r9},
               {"id":"R10","name":"clean + strict threshold","detail":"Does argus let the clean distroless image pass even at the strictest low threshold?","status":$r10},
               {"id":"R11","name":"SBOM-only never gates","detail":"Does argus let a syft-only scan pass at the low threshold, given an SBOM produces no findings to gate on?","status":$r11},
-              {"id":"R12","name":"dedup validation","detail":"Does argus deduplicate the CVEs that trivy and grype both report for nginx:1.19.0?","status":$r12}
+              {"id":"R12","name":"dedup validation","detail":"Does argus deduplicate the CVEs that trivy and grype both report for nginx:1.19.0? (Asserted against the scan report, not just the job result.)","status":$r12}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

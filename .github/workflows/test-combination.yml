@@ -33,7 +33,7 @@ permissions:
 #   - nginx:1.19.0 trips everything; distroless/static trips nothing;
 #     alpine:3.18 is unknowable and must never carry a gate assertion.
 #
-# DISCOVER-MODE CAVEAT (C10-C13)
+# DISCOVER-MODE CAVEAT (C10)
 # ------------------------------
 # argus 739ac35e also added a build-failure gate to container-scan.yml:
 #
@@ -47,9 +47,11 @@ permissions:
 # (D3, D4), which is the only place it can be isolated.
 #
 # Consequence worth knowing: with allow_failure=true the matrix job is
-# continue-on-error, so C10-C13 verify the workflow completes and produces a
-# summary, not that the scan found anything. Artifact-level assertions (E12)
-# are what upgrade them.
+# continue-on-error, so C10 verifies the workflow completes and produces a
+# summary, not that the scan found anything. Artifact-level assertions (E12,
+# R12) are what upgrade that. C11-C13 used to sit here varying scanners and
+# severity, but with both gates disarmed those inputs cannot change the
+# outcome, so all three asserted exactly what C10 already does.
 # ============================================================================
 
 jobs:
@@ -193,45 +195,6 @@ jobs:
       allow_failure: true
 
   # --------------------------------------------------------------------------
-  # Discover mode expansion
-  # --------------------------------------------------------------------------
-
-  # C11: discover + grype only (never tested)
-  # allow_failure=true — see DISCOVER-MODE CAVEAT: broken/Dockerfile trips the
-  # build gate on every allow_failure=false discover run in this repo.
-  c11-discover-grype:
-    name: "C11: discover grype only"
-    needs: c10-discover-allow
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: discover
-      scanners: grype
-      fail_on_severity: low
-      allow_failure: true
-
-  # C12: discover + all scanners (never tested)
-  c12-discover-all:
-    name: "C12: discover all scanners"
-    needs: c11-discover-grype
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: discover
-      scanners: trivy,grype,syft
-      fail_on_severity: none
-      allow_failure: true
-
-  # C13: discover + syft only + high threshold
-  c13-discover-syft:
-    name: "C13: discover syft only"
-    needs: c12-discover-all
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: discover
-      scanners: syft
-      fail_on_severity: high
-      allow_failure: true
-
-  # --------------------------------------------------------------------------
   # Multi-scanner + threshold (cross-cutting)
   # --------------------------------------------------------------------------
 
@@ -246,18 +209,6 @@ jobs:
       scanners: trivy,grype,syft
       fail_on_severity: high
       allow_failure: true
-
-  # C15: multi-scanner + medium threshold on clean image (should pass)
-  c15-medium-clean:
-    name: "C15: medium threshold on clean"
-    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
-    with:
-      scan_mode: remote
-      image_ref: gcr.io/distroless/static-debian12:latest
-      container_name: c15-medium-clean
-      scanners: trivy,grype
-      fail_on_severity: medium
-      allow_failure: false
 
   # --------------------------------------------------------------------------
   # Validation job
@@ -278,11 +229,7 @@ jobs:
       - c8-allow-multi-scanner
       - c9-allow-grype-clean
       - c10-discover-allow
-      - c11-discover-grype
-      - c12-discover-all
-      - c13-discover-syft
       - c14-all-high-alpine
-      - c15-medium-clean
     if: always()
     steps:
       - name: Validate test outcomes
@@ -297,11 +244,7 @@ jobs:
           C8: ${{ needs.c8-allow-multi-scanner.result }}
           C9: ${{ needs.c9-allow-grype-clean.result }}
           C10: ${{ needs.c10-discover-allow.result }}
-          C11: ${{ needs.c11-discover-grype.result }}
-          C12: ${{ needs.c12-discover-all.result }}
-          C13: ${{ needs.c13-discover-syft.result }}
           C14: ${{ needs.c14-all-high-alpine.result }}
-          C15: ${{ needs.c15-medium-clean.result }}
         run: |
           FAILURES=0
 
@@ -344,19 +287,13 @@ jobs:
           check "C9  allow_failure + grype + clean" "$C9" "success"
           check "C10 discover + allow_failure" "$C10" "success"
 
-          # Discover expansion — allow_failure=true, so the broken Dockerfile is
-          # tolerated and these assert "workflow completes + summary produced".
-          check "C11 discover grype only" "$C11" "success"
-          check "C12 discover all scanners" "$C12" "success"
-          check "C13 discover syft only" "$C13" "success"
 
           # Cross-cutting
           check "C14 all scanners + high + allow" "$C14" "success"
-          check "C15 medium threshold on clean" "$C15" "success"
 
           echo ""
           echo "============================================"
-          TOTAL=15
+          TOTAL=11
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -380,11 +317,7 @@ jobs:
           C8: ${{ needs.c8-allow-multi-scanner.result }}
           C9: ${{ needs.c9-allow-grype-clean.result }}
           C10: ${{ needs.c10-discover-allow.result }}
-          C11: ${{ needs.c11-discover-grype.result }}
-          C12: ${{ needs.c12-discover-all.result }}
-          C13: ${{ needs.c13-discover-syft.result }}
           C14: ${{ needs.c14-all-high-alpine.result }}
-          C15: ${{ needs.c15-medium-clean.result }}
         run: |
           # Two-arg form: a test "passes" when the observed job result matches
           # the result the scenario expects, which for the gate-fires tests
@@ -414,11 +347,7 @@ jobs:
             --arg c8 "$(to_status "$C8" success)" \
             --arg c9 "$(to_status "$C9" success)" \
             --arg c10 "$(to_status "$C10" success)" \
-            --arg c11 "$(to_status "$C11" success)" \
-            --arg c12 "$(to_status "$C12" success)" \
-            --arg c13 "$(to_status "$C13" success)" \
             --arg c14 "$(to_status "$C14" success)" \
-            --arg c15 "$(to_status "$C15" success)" \
             '[
               {"id":"C1","name":"trivy+syft pair","detail":"Does argus complete a scan when trivy and syft run together?","status":$c1},
               {"id":"C2","name":"grype+syft pair","detail":"Does argus complete a scan when grype and syft run together?","status":$c2},
@@ -430,10 +359,6 @@ jobs:
               {"id":"C8","name":"allow_failure + multi-scanner","detail":"Does argus let a trivy and grype scan that breaches the critical threshold pass when allow_failure is true?","status":$c8},
               {"id":"C9","name":"allow_failure + grype + clean","detail":"Does argus let a grype scan of the clean distroless image pass at the low threshold when allow_failure is true?","status":$c9},
               {"id":"C10","name":"discover + allow_failure","detail":"Does argus complete a discover run at the medium threshold when allow_failure is true?","status":$c10},
-              {"id":"C11","name":"discover grype only","detail":"Does argus complete a discover run with grype as the only scanner when allow_failure is true?","status":$c11},
-              {"id":"C12","name":"discover all scanners","detail":"Does argus complete a discover run with trivy, grype and syft all selected when allow_failure is true?","status":$c12},
-              {"id":"C13","name":"discover syft only","detail":"Does argus complete a discover run with syft as the only scanner when allow_failure is true?","status":$c13},
-              {"id":"C14","name":"all scanners + high + allow","detail":"Does argus let an all-scanner scan of alpine:3.18 pass at the high threshold when allow_failure is true?","status":$c14},
-              {"id":"C15","name":"medium threshold on clean","detail":"Does argus let a trivy and grype scan of the clean distroless image pass at the medium threshold?","status":$c15}
+              {"id":"C14","name":"all scanners + high + allow","detail":"Does argus let an all-scanner scan of alpine:3.18 pass at the high threshold when allow_failure is true?","status":$c14}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

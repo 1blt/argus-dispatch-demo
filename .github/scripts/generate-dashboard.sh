@@ -146,14 +146,14 @@ CATEGORIES=$(jq -n -c \
   --argjson sc "$SCN_JSON" \
   --argjson ig "$REGRESSION_JSON" \
   '[
-    {name:"Unit Tests (U1–U5)",        status:$us, tests:$u},
-    {name:"Direct Action Tests (A1–A5)",status:$as, tests:$a},
-    {name:"Remote Mode Tests (R1–R12)", status:$rs, tests:$r},
-    {name:"Discover Mode Tests (D1–D4)",status:$ds, tests:$d},
-    {name:"Combination Tests (C1–C15)", status:$cs, tests:$co},
-    {name:"Edge & Adversarial (E1–E14)", status:$es, tests:$ed},
-    {name:"Top-level Workflow Tests (W1–W4)", status:$ws, tests:$wf},
-    {name:"SCN Detector Tests (S1–S25)",status:$ss, tests:$sc},
+    {name:"Unit Tests",        status:$us, tests:$u},
+    {name:"Direct Action Tests",status:$as, tests:$a},
+    {name:"Remote Mode Tests", status:$rs, tests:$r},
+    {name:"Discover Mode Tests",status:$ds, tests:$d},
+    {name:"Combination Tests", status:$cs, tests:$co},
+    {name:"Edge & Adversarial", status:$es, tests:$ed},
+    {name:"Top-level Workflow Tests", status:$ws, tests:$wf},
+    {name:"SCN Detector Tests",status:$ss, tests:$sc},
     {name:"Infrastructure Scan (I1)",   status:$i1s,tests:[$ig[0]]},
     {name:"No Hardcoded URLs (I2)",     status:$i2s,tests:[$ig[1]]},
     {name:"Config-Driven Scan (I3)",    status:$i3s,tests:[$ig[2]]}
@@ -169,15 +169,15 @@ WF_DIR="$SCRIPT_DIR/../workflows"
 
 category_for() {
   case "$1" in
-    test-unit)            echo "Unit Tests (U1–U5)" ;;
-    test-actions-direct)  echo "Direct Action Tests (A1–A5)" ;;
-    test-remote)          echo "Remote Mode Tests (R1–R12)" ;;
-    test-discover)        echo "Discover Mode Tests (D1–D4)" ;;
-    test-combination)     echo "Combination Tests (C1–C15)" ;;
-    test-edge)            echo "Edge & Adversarial (E1–E14)" ;;
-    test-workflows)       echo "Top-level Workflow Tests (W1–W4)" ;;
-    test-scn-detector)    echo "SCN Detector Tests (S1–S25)" ;;
-    test-suite)           echo "Regression Tests (I1–I3)" ;;
+    test-unit)            echo "Unit Tests" ;;
+    test-actions-direct)  echo "Direct Action Tests" ;;
+    test-remote)          echo "Remote Mode Tests" ;;
+    test-discover)        echo "Discover Mode Tests" ;;
+    test-combination)     echo "Combination Tests" ;;
+    test-edge)            echo "Edge & Adversarial" ;;
+    test-workflows)       echo "Top-level Workflow Tests" ;;
+    test-scn-detector)    echo "SCN Detector Tests" ;;
+    test-suite)           echo "Regression Tests" ;;
     *)                    echo "Other" ;;
   esac
 }
