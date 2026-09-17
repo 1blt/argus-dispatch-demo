@@ -89,7 +89,7 @@ jobs:
 
   # C3: medium threshold on vulnerable image (medium severity never tested)
   c3-medium-vuln:
-    name: "C3: medium threshold on vuln"
+    name: "C3: medium threshold on vuln [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -101,7 +101,7 @@ jobs:
 
   # C4: high threshold standalone (R8 masks with allow_failure=true)
   c4-high-vuln:
-    name: "C4: high threshold on vuln"
+    name: "C4: high threshold on vuln [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -113,7 +113,7 @@ jobs:
 
   # C5: grype + critical threshold (grype never threshold-tested)
   c5-grype-critical:
-    name: "C5: grype + critical threshold"
+    name: "C5: grype + critical threshold [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -128,7 +128,7 @@ jobs:
   # Was alpine:3.18 on the guess that it "has low/med vulns". Moved to the
   # DIRTY anchor so the assertion is true by construction rather than by luck.
   c6-low-vuln:
-    name: "C6: low threshold on vuln"
+    name: "C6: low threshold on vuln [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -162,7 +162,7 @@ jobs:
 
   # C8: multi-scanner + allow_failure (only single-scanner tested in R8)
   c8-allow-multi-scanner:
-    name: "C8: allow_failure + multi-scanner"
+    name: "C8: allow_failure + multi-scanner [inner red ok]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -186,7 +186,7 @@ jobs:
 
   # C10: discover + allow_failure (never tested)
   c10-discover-allow:
-    name: "C10: discover + allow_failure"
+    name: "C10: discover + allow_failure [inner red ok]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
@@ -200,7 +200,7 @@ jobs:
 
   # C14: all scanners + high threshold + allow_failure on low-vuln image
   c14-all-high-alpine:
-    name: "C14: all scanners + high + allow_failure"
+    name: "C14: all scanners + high + allow_failure [inner red ok]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote

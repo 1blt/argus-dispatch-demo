@@ -133,7 +133,7 @@ jobs:
   # This is the gate-fires test. 'failure' is the passing outcome.
   # --------------------------------------------------------------------------
   r6-fail-critical:
-    name: "R6: fail on critical"
+    name: "R6: fail on critical [red = pass]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -161,7 +161,7 @@ jobs:
   # R8: Vulnerable image + allow_failure=true -> should PASS (allow_failure)
   # --------------------------------------------------------------------------
   r8-allow-failure:
-    name: "R8: allow failure"
+    name: "R8: allow failure [inner red ok]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
@@ -175,7 +175,7 @@ jobs:
   # R9: Bad image reference -> graceful error (error handling)
   # --------------------------------------------------------------------------
   r9-bad-image:
-    name: "R9: bad image"
+    name: "R9: bad image [either outcome ok]"
     uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
