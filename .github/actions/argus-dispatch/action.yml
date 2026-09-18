@@ -1,0 +1,103 @@
+name: "Dispatch any argus workflow and assert its outcome"
+description: >
+  Generic form of argus-scan: dispatches a named dispatch-target workflow with
+  an arbitrary JSON input object, waits for that run, and asserts its
+  conclusion. The calling job is green exactly when the assertion holds.
+
+# NOTE: argus-scan does the same thing for container-scan specifically. The two
+# should be consolidated -- argus-scan predates this and is already proven
+# against the four container suites, so it was left alone rather than rewritten
+# underneath working tests. Consolidating is a follow-up, not a rewrite to do
+# while the conversion is still being validated.
+
+inputs:
+  workflow:
+    description: "Dispatch-target workflow file, e.g. argus-hardening-run.yml"
+    required: true
+  inputs_json:
+    description: "JSON object of inputs for that workflow. `marker` is added here."
+    required: false
+    default: '{}'
+  expect:
+    description: "Required conclusion: success, failure, or any"
+    required: true
+  test_id:
+    required: true
+  timeout_seconds:
+    required: false
+    default: '1800'
+
+outputs:
+  status:
+    value: ${{ steps.run.outputs.status }}
+  child_run_id:
+    value: ${{ steps.run.outputs.child_run_id }}
+  child_run_url:
+    value: ${{ steps.run.outputs.child_run_url }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        WF: ${{ inputs.workflow }}
+        INPUTS_JSON: ${{ inputs.inputs_json }}
+        EXPECT: ${{ inputs.expect }}
+        TEST_ID: ${{ inputs.test_id }}
+        TIMEOUT_S: ${{ inputs.timeout_seconds }}
+      run: |
+        set -uo pipefail
+        fail() { echo "::error::$1"; echo "status=FAIL" >> "$GITHUB_OUTPUT"; exit 1; }
+
+        MARKER="${TEST_ID}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        echo "marker: $MARKER   workflow: $WF"
+
+        echo "$INPUTS_JSON" | jq -e . >/dev/null 2>&1 || fail "inputs_json is not valid JSON: $INPUTS_JSON"
+        echo "$INPUTS_JSON" | jq -c --arg m "$MARKER" '. + {marker: $m}' > /tmp/dispatch-inputs.json
+        cat /tmp/dispatch-inputs.json
+
+        if ! gh workflow run "$WF" --ref "$GITHUB_REF_NAME" --json < /tmp/dispatch-inputs.json; then
+          fail "Could not dispatch $WF. It must exist on the DEFAULT branch, and this job needs actions: write."
+        fi
+
+        RID=""
+        for i in $(seq 1 60); do
+          sleep 5
+          RID=$(gh run list --workflow="$WF" --limit 100 --json databaseId,displayTitle \
+                --jq "[.[] | select(.displayTitle == \"argus $MARKER\")][0].databaseId" 2>/dev/null || true)
+          if [ -n "$RID" ] && [ "$RID" != "null" ]; then break; fi
+          RID=""
+        done
+        [ -n "$RID" ] || fail "Dispatched $WF but no run named 'argus $MARKER' appeared within 300s."
+
+        URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/$RID"
+        echo "child_run_id=$RID" >> "$GITHUB_OUTPUT"
+        echo "child_run_url=$URL" >> "$GITHUB_OUTPUT"
+        echo "argus run: $URL"
+
+        DEADLINE=$(( $(date +%s) + TIMEOUT_S ))
+        STATUS=""; CONCL=""
+        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+          read -r STATUS CONCL <<<"$(gh run view "$RID" --json status,conclusion \
+              --jq '"\(.status) \(.conclusion // "-")"' 2>/dev/null || echo "unknown -")"
+          [ "$STATUS" = "completed" ] && break
+          sleep 15
+        done
+        [ "$STATUS" = "completed" ] || fail "$URL did not finish within ${TIMEOUT_S}s (last status: $STATUS)."
+
+        echo "observed: $CONCL   expected: $EXPECT"
+        if [ "$EXPECT" = "any" ]; then
+          case "$CONCL" in
+            success|failure) echo "status=pass" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            *) fail "$TEST_ID: ended as '$CONCL', neither success nor failure -- $URL" ;;
+          esac
+        fi
+        if [ "$CONCL" = "$EXPECT" ]; then
+          echo "PASS $TEST_ID: concluded '$CONCL' as expected"
+          echo "status=pass" >> "$GITHUB_OUTPUT"
+        else
+          fail "$TEST_ID: concluded '$CONCL', expected '$EXPECT' -- $URL"
+        fi

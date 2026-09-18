@@ -9,202 +9,98 @@ on:
 
 permissions:
   contents: read
+  actions: write        # dispatching argus-hardening-run.yml
   security-events: write
-  actions: read
   packages: read
   pull-requests: write
-  checks: write
-  id-token: write
 
 # ============================================================================
-# Top-level orchestration tests (W1-W4)
-#
-# Closes the one entry this suite had classified as "untested anywhere".
-#
 # reusable-security-hardening.yml is argus's consumer-facing orchestration
-# layer: a caller names scanners and it fans out to the per-scanner jobs and
-# stitches a summary. It was referenced only by security-reusable-demo.yml,
-# which is workflow_dispatch-only and therefore never runs, so nothing
+# layer. It was referenced only by a workflow_dispatch-only demo, so nothing
 # exercised it -- not this suite, and not argus's own CI.
 #
-# (security-scan.yml is NOT tested here and is not a gap: it declares only
-# push/schedule/workflow_dispatch, so it is argus scanning itself rather than
-# anything a consumer can call.)
+# Dispatched rather than `uses:` for the same reason as the container suites,
+# and more acutely: this workflow fans out to a dozen scanner jobs and skips
+# the unselected ones, so four tests contributed roughly 48 skipped jobs to
+# every run. Dispatching moves all of that into its own runs.
 #
-# WHAT THESE ASSERT
-# -----------------
-# The orchestration layer, not the scanners underneath it -- argus CI already
-# covers each scanner action directly. What has never been checked is that the
-# coordinator resolves a `scanners` input into the right set of jobs, that the
-# selected jobs run, and that the summary job stitches their output.
+# Every test runs with allow_failure: true, which pins the fanned-out scanners
+# to a 'none' threshold, so findings cannot decide the outcome. A red here
+# means the orchestration broke, not that a fixture grew a CVE.
 #
-# So every test runs with allow_failure=true, which pins fail_on_severity to
-# 'none' for every fanned-out scanner (see the workflow's
-# `inputs.allow_failure == false && inputs.severity_threshold || 'none'`).
-# Findings therefore cannot decide the outcome, and a red here means the
-# orchestration broke rather than that the fixture grew a CVE.
-#
-# Scanner selections are deliberately narrow. `scanners: all` would fan out to
-# a dozen jobs per test and turn a four-test suite into a fifty-job one.
+# max-parallel: 2 -- each of these fans out to many jobs in its child run, so
+# they are far heavier than a container scan.
 # ============================================================================
 
 jobs:
-  # --------------------------------------------------------------------------
-  # W1: narrow selection, IaC family
-  #
-  # Points at tests/iac, which holds deliberately insecure Terraform, so the
-  # scanner has something real to parse. Proves a single-scanner selection
-  # resolves and runs.
-  # --------------------------------------------------------------------------
-  w1-hardening-iac:
-    name: "W1: hardening, trivy-iac only"
-    uses: huntridge-labs/argus/.github/workflows/reusable-security-hardening.yml@main
-    with:
-      scanners: trivy-iac
-      iac_path: tests/iac
-      allow_failure: true
-      post_pr_comment: false
+  workflows:
+    name: "${{ matrix.t.id }}: ${{ matrix.t.name }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        t:
+          - { id: W1, name: "hardening, trivy-iac only",     scanners: "trivy-iac",         iac_path: "tests/iac" }
+          - { id: W2, name: "hardening, lint only",          scanners: "lint",              iac_path: "" }
+          - { id: W3, name: "hardening, gitleaks + trivy-iac", scanners: "gitleaks,trivy-iac", iac_path: "tests/iac" }
+          - { id: W4, name: "hardening, unknown scanner",    scanners: "bogusscanner",      iac_path: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - id: t
+        uses: ./.github/actions/argus-dispatch
+        with:
+          test_id: ${{ matrix.t.id }}
+          expect: success
+          workflow: argus-hardening-run.yml
+          inputs_json: >-
+            {"scanners":"${{ matrix.t.scanners }}","iac_path":"${{ matrix.t.iac_path }}","allow_failure":true,"post_pr_comment":false}
+      - name: Record result
+        if: always()
+        run: |
+          jq -n -c --arg id "${{ matrix.t.id }}" \
+                   --arg status "${{ steps.t.outputs.status || 'FAIL' }}" \
+                   --arg child "${{ steps.t.outputs.child_run_id }}" \
+                   '{id:$id, status:$status, child:$child}' > "result-${{ matrix.t.id }}.json"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testresult-${{ matrix.t.id }}
+          path: result-${{ matrix.t.id }}.json
+          retention-days: 7
+          if-no-files-found: error
 
-  # --------------------------------------------------------------------------
-  # W2: a different scanner family resolves through the same coordinator
-  # --------------------------------------------------------------------------
-  w2-hardening-lint:
-    name: "W2: hardening, lint only"
-    needs: w1-hardening-iac
-    uses: huntridge-labs/argus/.github/workflows/reusable-security-hardening.yml@main
-    with:
-      scanners: lint
-      allow_failure: true
-      post_pr_comment: false
-
-  # --------------------------------------------------------------------------
-  # W3: multi-scanner selection -- the fan-out and the summary stitch
-  #
-  # Two families at once, which is the case a real consumer configures and the
-  # one where the coordinator's resolution and the summary's artifact gathering
-  # can disagree.
-  # --------------------------------------------------------------------------
-  w3-hardening-multi:
-    name: "W3: hardening, gitleaks + trivy-iac"
-    needs: w2-hardening-lint
-    uses: huntridge-labs/argus/.github/workflows/reusable-security-hardening.yml@main
-    with:
-      scanners: gitleaks,trivy-iac
-      iac_path: tests/iac
-      allow_failure: true
-      post_pr_comment: false
-
-  # --------------------------------------------------------------------------
-  # W4: a scanner name the coordinator does not know
-  #
-  # Confirmed behaviour (run 35239547696): an unrecognised name does NOT select
-  # nothing. The coordinator falls back to a broad default set -- this run fired
-  # gitleaks, checkov, opengrep, bandit, sbom, trivy-iac and the container
-  # scanner off the single input `bogusscanner`.
-  #
-  # So the workflow completes, which is what this asserts, but the caller did
-  # not get what they asked for and nothing told them. That is arguably worse
-  # than selecting nothing: a typo in a scanners list silently runs a different
-  # scan than the one configured. The orchestration-level twin of E5, which
-  # confirmed the same class of silence one layer down.
-  # --------------------------------------------------------------------------
-  w4-hardening-unknown-scanner:
-    name: "W4: hardening, unknown scanner name"
-    needs: w3-hardening-multi
-    uses: huntridge-labs/argus/.github/workflows/reusable-security-hardening.yml@main
-    with:
-      scanners: bogusscanner
-      allow_failure: true
-      post_pr_comment: false
-
-  # --------------------------------------------------------------------------
-  # Validation
-  # --------------------------------------------------------------------------
   validate-results:
     name: "Validate Workflow Test Results"
     runs-on: ubuntu-latest
+    needs: workflows
+    if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
-    needs:
-      - w1-hardening-iac
-      - w2-hardening-lint
-      - w3-hardening-multi
-      - w4-hardening-unknown-scanner
-    if: always()
     steps:
-      - name: Validate test outcomes
-        env:
-          W1: ${{ needs.w1-hardening-iac.result }}
-          W2: ${{ needs.w2-hardening-lint.result }}
-          W3: ${{ needs.w3-hardening-multi.result }}
-          W4: ${{ needs.w4-hardening-unknown-scanner.result }}
-        run: |
-          FAILURES=0
-
-          check() {
-            local name="$1" got="$2" expected="$3"
-            if [ "$got" = "$expected" ]; then
-              echo "PASS $name: $got (expected $expected)"
-            else
-              echo "FAIL $name: $got (expected $expected)"
-              FAILURES=$((FAILURES + 1))
-            fi
-          }
-
-          echo "============================================"
-          echo "Top-level Workflow Test Validation"
-          echo "============================================"
-          echo ""
-
-          check "W1 hardening trivy-iac" "$W1" "success"
-          check "W2 hardening lint" "$W2" "success"
-          check "W3 hardening gitleaks+trivy-iac" "$W3" "success"
-          check "W4 hardening unknown scanner" "$W4" "success"
-
-          echo ""
-          echo "============================================"
-          TOTAL=4
-          PASSED=$((TOTAL - FAILURES))
-          echo "Results: $PASSED/$TOTAL passed"
-          echo "============================================"
-
-          if [ "$FAILURES" -gt 0 ]; then
-            echo "::error::$FAILURES workflow test(s) did not produce expected outcome"
-            exit 1
-          fi
-
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: testresult-W*
+          path: ./results
+          merge-multiple: true
       - name: Build results JSON
         id: collect
-        if: always()
-        env:
-          W1: ${{ needs.w1-hardening-iac.result }}
-          W2: ${{ needs.w2-hardening-lint.result }}
-          W3: ${{ needs.w3-hardening-multi.result }}
-          W4: ${{ needs.w4-hardening-unknown-scanner.result }}
         run: |
-          to_status() {
-            local got="$1" expected="$2"
-            case "$got" in
-              skipped) echo "skip" ;;
-              cancelled) echo "cancel" ;;
-              *)
-                if [ "$got" = "$expected" ]; then
-                  echo "pass"
-                else
-                  echo "FAIL"
-                fi
-                ;;
-            esac
+          set -uo pipefail
+          cat > /tmp/detail.json <<'JSON'
+          {
+            "W1": ["hardening trivy-iac","Does the reusable-security-hardening workflow run when a caller selects only the trivy-iac scanner?"],
+            "W2": ["hardening lint","Does the reusable-security-hardening workflow run when a caller selects only the lint scanners?"],
+            "W3": ["hardening multi-scanner","Does the reusable-security-hardening workflow fan out and stitch a summary when a caller selects gitleaks and trivy-iac together?"],
+            "W4": ["hardening unknown scanner","Does the reusable-security-hardening workflow finish cleanly when the scanners input names nothing it recognises? (It does, by falling back to a broad default set rather than warning.)"]
           }
-          RESULTS=$(jq -n -c \
-            --arg w1 "$(to_status "$W1" success)" \
-            --arg w2 "$(to_status "$W2" success)" \
-            --arg w3 "$(to_status "$W3" success)" \
-            --arg w4 "$(to_status "$W4" success)" \
-            '[
-              {"id":"W1","name":"hardening trivy-iac","detail":"Does the reusable-security-hardening workflow run when a caller selects only the trivy-iac scanner?","status":$w1},
-              {"id":"W2","name":"hardening lint","detail":"Does the reusable-security-hardening workflow run when a caller selects only the lint scanners?","status":$w2},
-              {"id":"W3","name":"hardening multi-scanner","detail":"Does the reusable-security-hardening workflow fan out and stitch a summary when a caller selects gitleaks and trivy-iac together?","status":$w3},
-              {"id":"W4","name":"hardening unknown scanner","detail":"Does the reusable-security-hardening workflow finish cleanly when the scanners input names nothing it recognises? (It does, by falling back to a broad default set rather than warning.)","status":$w4}
-            ]')
+          JSON
+          RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json '
+            [ .[] | select(.id | test("^W[0-9]+$")) | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
+            | sort_by(.id | ltrimstr("W") | tonumber)
+          ' ./results/result-*.json)
+          echo "$RESULTS" | jq -e 'length > 0' >/dev/null || { echo "::error::no workflow results collected"; exit 1; }
+          echo "collected $(echo "$RESULTS" | jq 'length') results"
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

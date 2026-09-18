@@ -1,0 +1,27 @@
+name: "argus hardening run (dispatch target)"
+run-name: "argus ${{ inputs.marker }}"
+on:
+  workflow_dispatch:
+    inputs:
+      marker:      { required: true,  type: string }
+      scanners:    { required: false, type: string, default: 'all' }
+      iac_path:    { required: false, type: string, default: '' }
+      allow_failure:   { required: false, type: boolean, default: true }
+      post_pr_comment: { required: false, type: boolean, default: false }
+# Must be a superset of what reusable-security-hardening.yml declares, or the
+# call fails at startup with no jobs and no annotation.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+  checks: write
+  id-token: write
+jobs:
+  scan:
+    uses: huntridge-labs/argus/.github/workflows/reusable-security-hardening.yml@main
+    with:
+      scanners: ${{ inputs.scanners }}
+      iac_path: ${{ inputs.iac_path }}
+      allow_failure: ${{ inputs.allow_failure }}
+      post_pr_comment: ${{ inputs.post_pr_comment }}

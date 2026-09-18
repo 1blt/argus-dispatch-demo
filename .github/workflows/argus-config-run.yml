@@ -1,0 +1,19 @@
+name: "argus config run (dispatch target)"
+run-name: "argus ${{ inputs.marker }}"
+on:
+  workflow_dispatch:
+    inputs:
+      marker:      { required: true,  type: string }
+      config_file: { required: true,  type: string }
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+  id-token: write
+  packages: read
+jobs:
+  scan:
+    uses: huntridge-labs/argus/.github/workflows/container-scan-from-config.yml@main
+    with:
+      config_file: ${{ inputs.config_file }}

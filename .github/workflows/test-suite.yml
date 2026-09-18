@@ -79,14 +79,16 @@ jobs:
         run: |
           set -uo pipefail
           N=0
-          for r in $(gh run list --workflow=argus-run.yml --limit 100 \
+          for WF in argus-run.yml argus-hardening-run.yml argus-iac-run.yml argus-config-run.yml; do
+          for r in $(gh run list --workflow="$WF" --limit 100 \
                      --json databaseId,status,displayTitle \
                      --jq ".[] | select(.status==\"queued\" or .status==\"in_progress\")
                            | select(.displayTitle | contains(\"-${GITHUB_RUN_ID}-\") | not)
                            | .databaseId" 2>/dev/null); do
             gh run cancel "$r" >/dev/null 2>&1 && N=$((N+1))
           done
-          echo "cancelled $N orphaned argus run(s) from superseded parents"
+          done
+          echo "cancelled $N orphaned argus run(s) from superseded parents across all dispatch targets"
 
   # ==========================================================================
   # Unit Tests (U1-U5)
@@ -150,6 +152,7 @@ jobs:
   workflow-tests:
     name: "Top-level Workflow Tests"
     if: inputs.scope == 'all' || inputs.scope == 'workflows' || github.event_name == 'schedule' || github.event_name == 'push'
+    needs: reap-orphans
     uses: ./.github/workflows/test-workflows.yml
 
   # ==========================================================================
@@ -174,14 +177,22 @@ jobs:
   # ==========================================================================
   i1-infrastructure-scan:
     name: "I1: infrastructure-scan regression"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: reap-orphans
     if: inputs.scope == 'all' || inputs.scope == 'regression' || github.event_name == 'schedule' || github.event_name == 'push'
-    uses: huntridge-labs/argus/.github/workflows/infrastructure-scan.yml@main
-    with:
-      # Was the default iac_path of "infrastructure", which does not exist here,
-      # so I1 passed by scanning nothing. tests/iac holds deliberately insecure
-      # Terraform for the scanners to actually parse.
-      iac_path: tests/iac
-      fail_on_severity: none
+    steps:
+      - uses: actions/checkout@v4
+      - id: t
+        uses: ./.github/actions/argus-dispatch
+        with:
+          test_id: I1
+          expect: success
+          workflow: argus-iac-run.yml
+          # iac_path was the default "infrastructure", which does not exist here,
+          # so I1 passed by scanning nothing. tests/iac holds deliberately
+          # insecure Terraform for the scanners to actually parse.
+          inputs_json: '{"iac_path":"tests/iac","fail_on_severity":"none"}'
 
   # ==========================================================================
   # I2: No hardcoded URLs (inline regression check)
@@ -255,10 +266,19 @@ jobs:
   # ==========================================================================
   i3-config-scan:
     name: "I3: config-driven scan"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: reap-orphans
     if: inputs.scope == 'all' || inputs.scope == 'regression' || github.event_name == 'schedule' || github.event_name == 'push'
-    uses: huntridge-labs/argus/.github/workflows/container-scan-from-config.yml@main
-    with:
-      config_file: tests/configs/single-public.yml
+    steps:
+      - uses: actions/checkout@v4
+      - id: t
+        uses: ./.github/actions/argus-dispatch
+        with:
+          test_id: I3
+          expect: success
+          workflow: argus-config-run.yml
+          inputs_json: '{"config_file":"tests/configs/single-public.yml"}'
 
   # ==========================================================================
   # Final Summary

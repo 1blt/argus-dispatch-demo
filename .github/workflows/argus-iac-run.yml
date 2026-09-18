@@ -1,0 +1,19 @@
+name: "argus iac run (dispatch target)"
+run-name: "argus ${{ inputs.marker }}"
+on:
+  workflow_dispatch:
+    inputs:
+      marker:   { required: true,  type: string }
+      iac_path: { required: false, type: string, default: '' }
+      fail_on_severity: { required: false, type: string, default: 'none' }
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+jobs:
+  scan:
+    uses: huntridge-labs/argus/.github/workflows/infrastructure-scan.yml@main
+    with:
+      iac_path: ${{ inputs.iac_path }}
+      fail_on_severity: ${{ inputs.fail_on_severity }}
