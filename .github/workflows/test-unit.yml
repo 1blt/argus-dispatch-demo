@@ -467,6 +467,32 @@ jobs:
               sys.exit(1)
           print("No hardcoded github.com URLs in action logic")
           PYEOF
+
+  # --------------------------------------------------------------------------
+  # Collect every unit job's outcome into the results JSON the dashboard reads.
+  #
+  # This lived as a trailing step of ghes-static-analysis, which declared no
+  # `needs:`, so every `needs.<job>.result` it referenced resolved to nothing.
+  # The workflow output then pointed at `jobs.collect-results`, a job that did
+  # not exist, so `results` was always empty and the dashboard reported all five
+  # unit tests as "not run" no matter how they did.
+  #
+  # `if: always()` because a failing unit job is exactly the outcome that has to
+  # reach the board.
+  # --------------------------------------------------------------------------
+  collect-results:
+    name: "Collect unit test results"
+    runs-on: ubuntu-latest
+    needs:
+      - parse-container-config
+      - scanner-container
+      - other-scanners
+      - scn-detector
+      - ghes-static-analysis
+    if: always()
+    outputs:
+      results: ${{ steps.collect.outputs.results }}
+    steps:
       - name: Build results JSON
         id: collect
         env:
