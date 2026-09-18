@@ -23,5 +23,8 @@ jobs:
     with:
       scanners: ${{ inputs.scanners }}
       iac_path: ${{ inputs.iac_path }}
-      allow_failure: ${{ inputs.allow_failure }}
-      post_pr_comment: ${{ inputs.post_pr_comment }}
+      # workflow_dispatch inputs arrive as STRINGS even when declared boolean,
+      # and passing a string to a boolean input of a called workflow fails the
+      # run at startup with no jobs and no annotation. Compare to coerce.
+      allow_failure: ${{ inputs.allow_failure == 'true' || inputs.allow_failure == true }}
+      post_pr_comment: ${{ inputs.post_pr_comment == 'true' || inputs.post_pr_comment == true }}
