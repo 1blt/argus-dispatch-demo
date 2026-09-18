@@ -39,7 +39,10 @@ concurrency:
 permissions:
   contents: read
   security-events: write
-  actions: read
+  # write, not read: the converted suites dispatch argus-run.yml. A called
+  # workflow cannot request more than its caller grants, and asking for more
+  # fails the whole run at startup with no jobs and no annotation.
+  actions: write
   packages: read
   pull-requests: write
   checks: write
