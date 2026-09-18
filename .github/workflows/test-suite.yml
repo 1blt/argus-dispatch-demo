@@ -56,6 +56,38 @@ permissions:
 # ============================================================================
 
 jobs:
+  # --------------------------------------------------------------------------
+  # Cancel argus-run children orphaned by a superseded parent.
+  #
+  # A dispatched run is independent: cancelling or superseding the run that
+  # dispatched it leaves it queued. With cancel-in-progress on this workflow,
+  # every push during a run strands that run's children, and they crowd the
+  # queue ahead of the live ones -- 20 orphans accumulated over four pushes
+  # while proving this out.
+  #
+  # Matches on the marker each child carries in its run-name, keeping only
+  # those belonging to THIS run.
+  # --------------------------------------------------------------------------
+  reap-orphans:
+    name: "Reap orphaned argus runs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          N=0
+          for r in $(gh run list --workflow=argus-run.yml --limit 100 \
+                     --json databaseId,status,displayTitle \
+                     --jq ".[] | select(.status==\"queued\" or .status==\"in_progress\")
+                           | select(.displayTitle | contains(\"-${GITHUB_RUN_ID}-\") | not)
+                           | .databaseId" 2>/dev/null); do
+            gh run cancel "$r" >/dev/null 2>&1 && N=$((N+1))
+          done
+          echo "cancelled $N orphaned argus run(s) from superseded parents"
+
   # ==========================================================================
   # Unit Tests (U1-U5)
   # ==========================================================================
@@ -82,6 +114,7 @@ jobs:
   remote-tests:
     name: "Remote Mode Tests"
     if: inputs.scope == 'all' || inputs.scope == 'remote' || github.event_name == 'schedule' || github.event_name == 'push'
+    needs: reap-orphans
     uses: ./.github/workflows/test-remote.yml
 
   # ==========================================================================
@@ -90,6 +123,7 @@ jobs:
   discover-tests:
     name: "Discover Mode Tests"
     if: inputs.scope == 'all' || inputs.scope == 'discover' || github.event_name == 'schedule' || github.event_name == 'push'
+    needs: reap-orphans
     uses: ./.github/workflows/test-discover.yml
 
   # ==========================================================================
@@ -98,6 +132,7 @@ jobs:
   combination-tests:
     name: "Combination Tests"
     if: inputs.scope == 'all' || inputs.scope == 'combination' || github.event_name == 'schedule' || github.event_name == 'push'
+    needs: reap-orphans
     uses: ./.github/workflows/test-combination.yml
 
   # ==========================================================================
@@ -106,6 +141,7 @@ jobs:
   edge-tests:
     name: "Edge & Adversarial Tests"
     if: inputs.scope == 'all' || inputs.scope == 'edge' || github.event_name == 'schedule' || github.event_name == 'push'
+    needs: reap-orphans
     uses: ./.github/workflows/test-edge.yml
 
   # ==========================================================================
