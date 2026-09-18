@@ -1,0 +1,69 @@
+name: "demo: dispatch architecture"
+on: push
+
+permissions:
+  contents: read
+  actions: write     # required to dispatch argus-run.yml
+
+# ============================================================================
+# Demonstrates the dispatch architecture on three cases.
+#
+# The point is the CHECK COLOUR, not the argus behaviour:
+#
+#   D1  argus is asked to block and does  -> job GREEN  (today: red)
+#   D2  argus is asked to pass and does   -> job GREEN  (today: green)
+#   D3  expectation deliberately wrong    -> job RED
+#
+# D3 is not decoration. A test harness that only ever goes green is worthless,
+# and this suite has twice shipped assertions that could not fail (R6's original
+# form, and R12). D3 is the control that proves this one can.
+# ============================================================================
+
+jobs:
+  d1-gate-fires:
+    name: "D1: gate fires (expect failure) -> should be GREEN"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/argus-scan
+        with:
+          test_id: D1
+          expect: failure
+          image_ref: nginx:1.19.0
+          container_name: demo-d1
+          scanners: trivy,grype
+          fail_on_severity: critical
+          allow_failure: 'false'
+
+  d2-no-gate:
+    name: "D2: clean image, no gate (expect success) -> should be GREEN"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/argus-scan
+        with:
+          test_id: D2
+          expect: success
+          image_ref: gcr.io/distroless/static-debian12:latest
+          container_name: demo-d2
+          scanners: trivy
+          fail_on_severity: critical
+          allow_failure: 'false'
+
+  d3-control-must-go-red:
+    name: "D3: CONTROL, wrong expectation -> must be RED"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/argus-scan
+        with:
+          test_id: D3
+          expect: failure          # nginx WILL trip it, but severity=none cannot gate
+          image_ref: nginx:1.19.0
+          container_name: demo-d3
+          scanners: trivy
+          fail_on_severity: none
+          allow_failure: 'false'
