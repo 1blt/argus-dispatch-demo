@@ -67,3 +67,4 @@ jobs:
           scanners: trivy
           fail_on_severity: none
           allow_failure: 'false'
+# pr visibility probe
