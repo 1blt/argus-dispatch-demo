@@ -117,7 +117,7 @@ jobs:
           JSON
           RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json '
             # Filter by id rather than trusting the artifact glob. All suites share
-            # one workflow run, so a broad pattern pulls in other suites' results and
+            # one workflow run, so a broad pattern pulls in results from other suites and
             # tonumber then dies on a foreign id -- which is exactly how this failed.
             [ .[] | select(.id | test("^C[0-9]+$")) | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
             | sort_by(.id | ltrimstr("C") | tonumber)

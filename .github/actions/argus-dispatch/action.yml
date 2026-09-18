@@ -56,11 +56,20 @@ runs:
         echo "marker: $MARKER   workflow: $WF"
 
         echo "$INPUTS_JSON" | jq -e . >/dev/null 2>&1 || fail "inputs_json is not valid JSON: $INPUTS_JSON"
-        echo "$INPUTS_JSON" | jq -c --arg m "$MARKER" '. + {marker: $m}' > /tmp/dispatch-inputs.json
+
+        # `gh workflow run --json` demands STRING values for every input, even
+        # ones the workflow declares as boolean -- it rejects a real JSON bool
+        # with "cannot unmarshal bool into Go value of type string". Coerce
+        # here so no caller has to remember it.
+        echo "$INPUTS_JSON" \
+          | jq -c --arg m "$MARKER" '. + {marker: $m} | with_entries(.value |= tostring)' \
+          > /tmp/dispatch-inputs.json
         cat /tmp/dispatch-inputs.json
 
-        if ! gh workflow run "$WF" --ref "$GITHUB_REF_NAME" --json < /tmp/dispatch-inputs.json; then
-          fail "Could not dispatch $WF. It must exist on the DEFAULT branch, and this job needs actions: write."
+        if ! gh workflow run "$WF" --ref "$GITHUB_REF_NAME" --json < /tmp/dispatch-inputs.json 2>/tmp/dispatch-err; then
+          # Report what gh actually said. The previous message asserted a cause
+          # (default branch / permissions) and hid the real one.
+          fail "Could not dispatch $WF: $(tr '\n' ' ' < /tmp/dispatch-err). Check that it exists on the DEFAULT branch, that this job has actions: write, and that every input value is a string."
         fi
 
         RID=""

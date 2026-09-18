@@ -237,7 +237,7 @@ jobs:
 
           RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json --arg r12 "$R12_STATUS" '
             # Filter by id rather than trusting the artifact glob. All suites share
-            # one workflow run, so a broad pattern pulls in other suites' results
+            # one workflow run, so a broad pattern pulls in results from other suites
             # and tonumber then dies on a foreign id -- which is exactly how this
             # failed: pattern was testresult-* and it swallowed C, D and E.
             [ .[] | select(.id | test("^R[0-9]+$")) | {
