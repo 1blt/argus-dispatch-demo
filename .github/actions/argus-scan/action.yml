@@ -6,7 +6,7 @@ description: >
 
 inputs:
   expect:
-    description: "Required conclusion of the argus run: success or failure"
+    description: "Required conclusion: success, failure, or any (completed without crashing)"
     required: true
   test_id:
     description: "Test id, e.g. R6 -- used to build a unique run marker"
@@ -27,6 +27,9 @@ outputs:
   child_run_url:
     description: "URL of the argus run this dispatched"
     value: ${{ steps.run.outputs.child_run_url }}
+  child_run_id:
+    description: "Run id of the argus run, for downloading its artifacts"
+    value: ${{ steps.run.outputs.child_run_id }}
 
 runs:
   using: composite
@@ -74,6 +77,7 @@ runs:
 
         URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/$RID"
         echo "child_run_url=$URL" >> "$GITHUB_OUTPUT"
+        echo "child_run_id=$RID" >> "$GITHUB_OUTPUT"
         echo "argus run: $URL"
 
         # Wait for it to finish.
@@ -88,6 +92,19 @@ runs:
         [ "$STATUS" = "completed" ] || fail "argus run $URL did not finish within ${{ inputs.timeout_seconds }}s (last status: $STATUS)."
 
         echo "observed: $CONCL   expected: ${{ inputs.expect }}"
+
+        # `any` is for tests whose point is that argus does not crash -- R9
+        # scans an unpullable image, where either outcome is defensible. It
+        # still rejects cancelled/skipped, so it cannot pass vacuously.
+        if [ "${{ inputs.expect }}" = "any" ]; then
+          case "$CONCL" in
+            success|failure)
+              echo "PASS ${{ inputs.test_id }}: completed as '$CONCL' without crashing"
+              echo "status=pass" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            *) fail "${{ inputs.test_id }}: argus run ended as '$CONCL', which is neither success nor failure -- $URL" ;;
+          esac
+        fi
+
         if [ "$CONCL" = "${{ inputs.expect }}" ]; then
           echo "PASS ${{ inputs.test_id }}: argus run concluded '$CONCL' as expected"
           echo "status=pass" >> "$GITHUB_OUTPUT"
