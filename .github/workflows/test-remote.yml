@@ -2,6 +2,12 @@ name: "Remote Mode Tests"
 
 on:
   workflow_call:
+    inputs:
+      max_parallel:
+        description: "How many tests may run at once"
+        required: false
+        type: number
+        default: 6
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -15,258 +21,102 @@ permissions:
   pull-requests: write
 
 # ============================================================================
-# Remote mode tests, dispatch architecture.
+# Remote mode tests: matrix over a parameter table, dispatch architecture.
 #
-# Each test is an ORDINARY job that dispatches argus-run.yml, waits for that
-# run, and asserts its conclusion. The job is green exactly when its assertion
-# holds -- so R6, which asserts argus BLOCKS, is green when argus blocks.
+# TWO PROBLEMS THIS SHAPE SOLVES
+# ------------------------------
+# 1. Red for a correct test. Each test dispatches argus-run.yml and asserts the
+#    child run's conclusion, so the job is green exactly when its assertion
+#    holds. R6 asserts argus BLOCKS and is green when argus blocks. Calling
+#    container-scan.yml with `uses:` instead dragged argus's whole job graph in,
+#    which made a passing gate test render red and added 2-3 skipped argus jobs
+#    per test.
 #
-# Calling container-scan.yml with `uses:` instead pulls argus's whole job graph
-# into this run. That made a passing gate test render red, and contributed two
-# or three skipped argus jobs per test: 81 tests produced 298 checks, 127 of
-# them skips. Dispatched runs are not part of a pull request's check rollup,
-# so argus's jobs no longer appear there.
+# 2. Runner pressure. One hand-written job per test started every test at once:
+#    ~38 parents each dispatching a child, up to 76 concurrent runners, with
+#    children sitting in the queue. max-parallel bounds both halves, because a
+#    parent only dispatches once it starts.
 #
-# Proven on 1blt/argus-dispatch-demo#1: three checks, zero argus jobs, zero
-# skips, with a deliberately-wrong control going red.
+# WHY THE TESTS ARE A TABLE
+# -------------------------
+# Tabulating the parameter tuples is what exposed the duplication cut in #13 --
+# R12 was byte-identical to R7, and C11-C13 all restated C10. That is much
+# harder to see across 200 lines of near-identical job blocks.
 #
-# argus-run.yml MUST exist on the default branch or the dispatch 404s.
+# AGGREGATION
+# -----------
+# Matrix jobs share one set of outputs, last-writer-wins, so each entry writes
+# its own result artifact and validate-results collects them. That is also how
+# R12a finds the child run holding R12's scan report.
 #
-# SEVERITY GATE CONTRACT and DETERMINISM ANCHORS are unchanged -- see git
-# history for the full notes; the anchors are DIRTY nginx:1.19.0, CLEAN
-# gcr.io/distroless/static-debian12, UNKNOWN alpine:3.18 (never assert a gate
-# outcome against UNKNOWN).
+# DETERMINISM ANCHORS: DIRTY nginx:1.19.0 trips every threshold; CLEAN
+# gcr.io/distroless/static-debian12 has no package DB so trips none; UNKNOWN
+# alpine:3.18 drifts -- never assert a gate outcome against it.
 # ============================================================================
 
 jobs:
-  r1-vuln-all-scanners:
-    name: "R1: vuln + all scanners"
+  remote:
+    name: "${{ matrix.t.id }}: ${{ matrix.t.name }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel || 6 }}
+      matrix:
+        t:
+          - { id: R1,  name: "vuln + all scanners",          expect: success, image: "nginx:1.19.0",                              cname: r1-nginx-vuln,        scanners: "trivy,grype,syft", sev: none,     allow: 'false' }
+          - { id: R3,  name: "trivy only",                   expect: success, image: "alpine:3.18",                               cname: r3-alpine-trivy,      scanners: "trivy",            sev: none,     allow: 'false' }
+          - { id: R4,  name: "grype only",                   expect: success, image: "alpine:3.18",                               cname: r4-alpine-grype,      scanners: "grype",            sev: none,     allow: 'false' }
+          - { id: R5,  name: "syft only",                    expect: success, image: "alpine:3.18",                               cname: r5-alpine-syft,       scanners: "syft",             sev: none,     allow: 'false' }
+          - { id: R6,  name: "gate fires on critical",       expect: failure, image: "nginx:1.19.0",                              cname: r6-nginx-critical,    scanners: "trivy,grype",      sev: critical, allow: 'false' }
+          - { id: R7,  name: "pass with none threshold",     expect: success, image: "nginx:1.19.0",                              cname: r7-nginx-none,        scanners: "trivy,grype",      sev: none,     allow: 'false' }
+          - { id: R8,  name: "allow_failure absorbs gate",   expect: success, image: "nginx:1.19.0",                              cname: r8-nginx-allow,       scanners: "trivy",            sev: high,     allow: 'true'  }
+          - { id: R9,  name: "bad image does not crash",     expect: any,     image: "nonexistent/nosuchimage:v0",                 cname: r9-bad-image,         scanners: "trivy",            sev: none,     allow: 'false' }
+          - { id: R10, name: "clean + strict threshold",     expect: success, image: "gcr.io/distroless/static-debian12:latest",   cname: r10-distroless-strict, scanners: "trivy,grype",     sev: low,      allow: 'false' }
+          - { id: R11, name: "SBOM-only never gates",        expect: success, image: "alpine:3.18",                               cname: r11-syft-no-gate,     scanners: "syft",             sev: low,      allow: 'false' }
+          - { id: R12, name: "dedup validation",             expect: success, image: "nginx:1.19.0",                              cname: r12-nginx-dedup,      scanners: "trivy,grype",      sev: none,     allow: 'false' }
     steps:
       - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R1
-          expect: success
-          image_ref: nginx:1.19.0
-          container_name: r1-nginx-vuln
-          scanners: trivy,grype,syft
-          fail_on_severity: none
-          allow_failure: 'false'
 
-  r3-trivy-only:
-    name: "R3: trivy only"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
       - id: t
         uses: ./.github/actions/argus-scan
         with:
-          test_id: R3
-          expect: success
-          image_ref: alpine:3.18
-          container_name: r3-alpine-trivy
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
+          test_id: ${{ matrix.t.id }}
+          expect: ${{ matrix.t.expect }}
+          scan_mode: remote
+          image_ref: ${{ matrix.t.image }}
+          container_name: ${{ matrix.t.cname }}
+          scanners: ${{ matrix.t.scanners }}
+          fail_on_severity: ${{ matrix.t.sev }}
+          allow_failure: ${{ matrix.t.allow }}
 
-  r4-grype-only:
-    name: "R4: grype only"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R4
-          expect: success
-          image_ref: alpine:3.18
-          container_name: r4-alpine-grype
-          scanners: grype
-          fail_on_severity: none
-          allow_failure: 'false'
+      # Matrix outputs are last-writer-wins, so each entry records its own.
+      - name: Record result
+        if: always()
+        run: |
+          jq -n -c --arg id "${{ matrix.t.id }}" \
+                   --arg status "${{ steps.t.outputs.status || 'FAIL' }}" \
+                   --arg child "${{ steps.t.outputs.child_run_id }}" \
+                   '{id:$id, status:$status, child:$child}' > "result-${{ matrix.t.id }}.json"
+          cat "result-${{ matrix.t.id }}.json"
 
-  r5-syft-only:
-    name: "R5: syft only"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          test_id: R5
-          expect: success
-          image_ref: alpine:3.18
-          container_name: r5-alpine-syft
-          scanners: syft
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  r6-fail-critical:
-    name: "R6: gate fires on critical"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R6
-          expect: failure
-          image_ref: nginx:1.19.0
-          container_name: r6-nginx-critical
-          scanners: trivy,grype
-          fail_on_severity: critical
-          allow_failure: 'false'
-
-  r7-pass-none:
-    name: "R7: pass with none threshold"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R7
-          expect: success
-          image_ref: nginx:1.19.0
-          container_name: r7-nginx-none
-          scanners: trivy,grype
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  r8-allow-failure:
-    name: "R8: allow failure absorbs the gate"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R8
-          expect: success
-          image_ref: nginx:1.19.0
-          container_name: r8-nginx-allow
-          scanners: trivy
-          fail_on_severity: high
-          allow_failure: 'true'
-
-  r9-bad-image:
-    name: "R9: bad image does not crash"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R9
-          expect: any
-          image_ref: nonexistent/nosuchimage:v0
-          container_name: r9-bad-image
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  r10-clean-strict:
-    name: "R10: clean + strict threshold"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R10
-          expect: success
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: r10-distroless-strict
-          scanners: trivy,grype
-          fail_on_severity: low
-          allow_failure: 'false'
-
-  r11-sbom-never-gates:
-    name: "R11: SBOM-only never gates"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R11
-          expect: success
-          image_ref: alpine:3.18
-          container_name: r11-syft-no-gate
-          scanners: syft
-          fail_on_severity: low
-          allow_failure: 'false'
-
-  r12-dedup-validation:
-    name: "R12: dedup validation"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: R12
-          expect: success
-          image_ref: nginx:1.19.0
-          container_name: r12-nginx-dedup
-          scanners: trivy,grype
-          fail_on_severity: none
-          allow_failure: 'false'
+          name: testresult-${{ matrix.t.id }}
+          path: result-${{ matrix.t.id }}.json
+          retention-days: 7
+          if-no-files-found: error
 
   # --------------------------------------------------------------------------
-  # R12a: the dedup assertion.
+  # R12a: assert deduplication actually happened.
   #
-  # The scan artifact now lives in the CHILD run, so this downloads it by the
-  # child's run id rather than from this run.
+  # R12's scan report lives in the run R12 dispatched, so this reads R12's
+  # result artifact to learn that child run id, then pulls the report from it.
   #
   # It compares the combined count against the SUM of each scanner's own unique
-  # count. It does not compare the combined table's Total against its Unique --
+  # count. It does NOT compare the combined table's Total against its Unique --
   # both are post-deduplication and equal by construction, which is how an
   # earlier version of this test reported a dedup failure against an argus that
   # was deduplicating correctly.
@@ -275,20 +125,26 @@ jobs:
     name: "R12a: assert dedup happened"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: r12-dedup-validation
+    needs: remote
     if: always()
-    outputs:
-      status: ${{ steps.assert.outputs.status }}
     steps:
-      - name: Download the R12 container summary from the child run
+      - name: Get R12's child run id
+        id: child
+        uses: actions/download-artifact@v4
+        with:
+          name: testresult-R12
+          path: ./r12-result
+
+      - name: Download the scan report from that child run
         id: download
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          CHILD="${{ needs.r12-dedup-validation.outputs.child }}"
-          [ -n "$CHILD" ] || { echo "::error::no child run id from R12"; exit 1; }
+          CHILD=$(jq -r '.child' ./r12-result/result-R12.json)
+          [ -n "$CHILD" ] && [ "$CHILD" != "null" ] || { echo "::error::R12 recorded no child run id"; exit 1; }
+          echo "R12 child run: $CHILD"
           mkdir -p ./r12-summary
           gh run download "$CHILD" -n scanner-summary-container-r12-nginx-dedup -D ./r12-summary
 
@@ -307,7 +163,7 @@ jobs:
               fail "R12 artifact holds no readable markdown report"
             else
               if ! grep -qiE 'combined \(deduplicated\)|combined findings' "$REPORT"; then
-                fail "Report has no combined/deduplicated section. If the report format changed, update this assertion rather than dropping it."
+                fail "Report has no combined/deduplicated section. If the format changed, update this assertion rather than dropping it."
               fi
               SCANNER_UNIQUES=$(grep -oE '[A-Za-z]+ Scanner \([0-9]+ findings, [0-9]+ unique\)' "$REPORT" \
                                 | grep -oE '[0-9]+ unique' | grep -oE '^[0-9]+')
@@ -319,7 +175,7 @@ jobs:
               if [ "$SCANNER_COUNT" -lt 2 ]; then
                 fail "Only $SCANNER_COUNT scanner section(s); cross-scanner dedup cannot be tested."
               elif [ -z "${COMBINED:-}" ]; then
-                fail "Could not read the combined finding count from the report"
+                fail "Could not read the combined finding count"
               elif [ "$COMBINED" -eq 0 ]; then
                 fail "Combined count is 0: nothing was scanned"
               elif [ "$COMBINED" -ge "$SUM_UNIQUE" ]; then
@@ -329,77 +185,66 @@ jobs:
               fi
             fi
           fi
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           [ "$STATUS" = "pass" ] || exit 1
 
   # --------------------------------------------------------------------------
-  # Validation.
-  #
-  # Every test job is now green iff its assertion held, so this no longer
-  # compares outcomes against expectations -- it only shapes the results JSON
-  # the dashboard consumes.
+  # Collect every matrix entry's result artifact into the dashboard's JSON.
   # --------------------------------------------------------------------------
   validate-results:
     name: "Validate Remote Test Results"
     runs-on: ubuntu-latest
+    needs: [remote, r12-assert-dedup]
+    if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
-    needs:
-      - r1-vuln-all-scanners
-      - r3-trivy-only
-      - r4-grype-only
-      - r5-syft-only
-      - r6-fail-critical
-      - r7-pass-none
-      - r8-allow-failure
-      - r9-bad-image
-      - r10-clean-strict
-      - r11-sbom-never-gates
-      - r12-dedup-validation
-      - r12-assert-dedup
-    if: always()
     steps:
+      - name: Download every test result
+        uses: actions/download-artifact@v4
+        with:
+          pattern: testresult-*
+          path: ./results
+          merge-multiple: true
+
       - name: Build results JSON
         id: collect
         env:
-          R1: ${{ needs.r1-vuln-all-scanners.result }}
-          R3: ${{ needs.r3-trivy-only.result }}
-          R4: ${{ needs.r4-grype-only.result }}
-          R5: ${{ needs.r5-syft-only.result }}
-          R6: ${{ needs.r6-fail-critical.result }}
-          R7: ${{ needs.r7-pass-none.result }}
-          R8: ${{ needs.r8-allow-failure.result }}
-          R9: ${{ needs.r9-bad-image.result }}
-          R10: ${{ needs.r10-clean-strict.result }}
-          R11: ${{ needs.r11-sbom-never-gates.result }}
-          R12: ${{ needs.r12-assert-dedup.result }}
+          R12A: ${{ needs.r12-assert-dedup.result }}
         run: |
-          to_status() {
-            case "$1" in
-              success) echo "pass" ;;
-              skipped) echo "skip" ;;
-              cancelled) echo "cancel" ;;
-              *) echo "FAIL" ;;
-            esac
+          set -uo pipefail
+          cat > /tmp/detail.json <<'JSON'
+          {
+            "R1":  ["vuln + all scanners","Does argus report vulnerabilities when nginx:1.19.0 is scanned with trivy, grype and syft together?"],
+            "R3":  ["trivy only","Does argus complete a scan when trivy is the only scanner selected?"],
+            "R4":  ["grype only","Does argus complete a scan when grype is the only scanner selected?"],
+            "R5":  ["syft only","Does argus generate an SBOM when syft is the only scanner selected?"],
+            "R6":  ["fail on critical","Does argus fail the workflow when nginx:1.19.0 carries criticals, fail_on_severity is critical and allow_failure is false?"],
+            "R7":  ["pass with none threshold","Does argus let a vulnerable image pass when fail_on_severity is none?"],
+            "R8":  ["allow failure","Does argus let a vulnerable image pass the high threshold when allow_failure is true?"],
+            "R9":  ["bad image","Does argus handle an image reference that cannot be pulled without crashing the workflow?"],
+            "R10": ["clean + strict threshold","Does argus let the clean distroless image pass even at the strictest low threshold?"],
+            "R11": ["SBOM-only never gates","Does argus let a syft-only scan pass at the low threshold, given an SBOM produces no findings to gate on?"],
+            "R12": ["dedup validation","Does argus deduplicate the CVEs that trivy and grype both report for nginx:1.19.0? (Asserted against the scan report, not just the job result.)"]
           }
-          RESULTS=$(jq -n -c \
-            --arg r1  "$(to_status "$R1")"  --arg r3  "$(to_status "$R3")" \
-            --arg r4  "$(to_status "$R4")"  --arg r5  "$(to_status "$R5")" \
-            --arg r6  "$(to_status "$R6")"  --arg r7  "$(to_status "$R7")" \
-            --arg r8  "$(to_status "$R8")"  --arg r9  "$(to_status "$R9")" \
-            --arg r10 "$(to_status "$R10")" --arg r11 "$(to_status "$R11")" \
-            --arg r12 "$(to_status "$R12")" \
-            '[
-              {"id":"R1","name":"vuln + all scanners","detail":"Does argus report vulnerabilities when nginx:1.19.0 is scanned with trivy, grype and syft together?","status":$r1},
-              {"id":"R3","name":"trivy only","detail":"Does argus complete a scan when trivy is the only scanner selected?","status":$r3},
-              {"id":"R4","name":"grype only","detail":"Does argus complete a scan when grype is the only scanner selected?","status":$r4},
-              {"id":"R5","name":"syft only","detail":"Does argus generate an SBOM when syft is the only scanner selected?","status":$r5},
-              {"id":"R6","name":"fail on critical","detail":"Does argus fail the workflow when nginx:1.19.0 carries criticals, fail_on_severity is critical and allow_failure is false?","status":$r6},
-              {"id":"R7","name":"pass with none threshold","detail":"Does argus let a vulnerable image pass when fail_on_severity is none?","status":$r7},
-              {"id":"R8","name":"allow failure","detail":"Does argus let a vulnerable image pass the high threshold when allow_failure is true?","status":$r8},
-              {"id":"R9","name":"bad image","detail":"Does argus handle an image reference that cannot be pulled without crashing the workflow?","status":$r9},
-              {"id":"R10","name":"clean + strict threshold","detail":"Does argus let the clean distroless image pass even at the strictest low threshold?","status":$r10},
-              {"id":"R11","name":"SBOM-only never gates","detail":"Does argus let a syft-only scan pass at the low threshold, given an SBOM produces no findings to gate on?","status":$r11},
-              {"id":"R12","name":"dedup validation","detail":"Does argus deduplicate the CVEs that trivy and grype both report for nginx:1.19.0? (Asserted against the scan report, not just the job result.)","status":$r12}
-            ]')
+          JSON
+
+          # R12's headline status is R12a's verdict: the scan completing proves
+          # nothing about deduplication, which is the thing R12 is named for.
+          case "$R12A" in
+            success) R12_STATUS=pass ;;
+            skipped) R12_STATUS=skip ;;
+            *)       R12_STATUS=FAIL ;;
+          esac
+
+          RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json --arg r12 "$R12_STATUS" '
+            [ .[] | {
+                id: .id,
+                name: ($d[0][.id][0] // .id),
+                detail: ($d[0][.id][1] // ""),
+                status: (if .id == "R12" then $r12 else .status end)
+              } ]
+            | sort_by(.id | ltrimstr("R") | tonumber)
+          ' ./results/result-*.json)
+
+          echo "$RESULTS" | jq -e 'length > 0' >/dev/null || { echo "::error::no test results collected"; exit 1; }
+          echo "collected $(echo "$RESULTS" | jq 'length') results"
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
