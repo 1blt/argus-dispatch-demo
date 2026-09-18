@@ -1,0 +1,96 @@
+name: "Run argus in its own run and assert the outcome"
+description: >
+  Dispatches argus-run.yml, waits for that run, and asserts its conclusion
+  against `expect`. The calling job is green exactly when the assertion holds,
+  so a test that asserts argus BLOCKS is green when argus blocks.
+
+inputs:
+  expect:
+    description: "Required conclusion of the argus run: success or failure"
+    required: true
+  test_id:
+    description: "Test id, e.g. R6 -- used to build a unique run marker"
+    required: true
+  scan_mode: { required: false, default: 'remote' }
+  image_ref: { required: false, default: '' }
+  container_name: { required: false, default: '' }
+  registry_username: { required: false, default: '' }
+  scanners: { required: false, default: 'trivy,grype,syft' }
+  fail_on_severity: { required: false, default: 'none' }
+  allow_failure: { required: false, default: 'false' }
+  timeout_seconds: { required: false, default: '1800' }
+
+outputs:
+  status:
+    description: "pass or FAIL"
+    value: ${{ steps.run.outputs.status }}
+  child_run_url:
+    description: "URL of the argus run this dispatched"
+    value: ${{ steps.run.outputs.child_run_url }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        # A composite action does not inherit the caller's env, and `gh` needs
+        # both: a token to authenticate, and the repo since there may be no
+        # checkout in the calling job.
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+
+        fail() { echo "::error::$1"; echo "status=FAIL" >> "$GITHUB_OUTPUT"; exit 1; }
+
+        # Unique per test per attempt, so a re-run never matches an old child.
+        MARKER="${{ inputs.test_id }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        echo "marker: $MARKER"
+
+        if ! gh workflow run argus-run.yml --ref "$GITHUB_REF_NAME" \
+              -f marker="$MARKER" \
+              -f scan_mode='${{ inputs.scan_mode }}' \
+              -f image_ref='${{ inputs.image_ref }}' \
+              -f container_name='${{ inputs.container_name }}' \
+              -f registry_username='${{ inputs.registry_username }}' \
+              -f scanners='${{ inputs.scanners }}' \
+              -f fail_on_severity='${{ inputs.fail_on_severity }}' \
+              -f allow_failure='${{ inputs.allow_failure }}'; then
+          fail "Could not dispatch argus-run.yml. It must exist on the DEFAULT branch to be dispatchable, and the job needs actions: write."
+        fi
+
+        # The dispatch API returns no run id, so find the child by its run-name.
+        RID=""
+        for i in $(seq 1 60); do
+          sleep 5
+          RID=$(gh run list --workflow=argus-run.yml --limit 100 \
+                --json databaseId,displayTitle \
+                --jq "[.[] | select(.displayTitle == \"argus $MARKER\")][0].databaseId" 2>/dev/null || true)
+          if [ -n "$RID" ] && [ "$RID" != "null" ]; then break; fi
+          RID=""
+        done
+        [ -n "$RID" ] || fail "Dispatched argus-run.yml but no run named 'argus $MARKER' appeared within 300s."
+
+        URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/$RID"
+        echo "child_run_url=$URL" >> "$GITHUB_OUTPUT"
+        echo "argus run: $URL"
+
+        # Wait for it to finish.
+        DEADLINE=$(( $(date +%s) + ${{ inputs.timeout_seconds }} ))
+        CONCL=""
+        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+          read -r STATUS CONCL <<<"$(gh run view "$RID" --json status,conclusion \
+              --jq '"\(.status) \(.conclusion // "-")"' 2>/dev/null || echo "unknown -")"
+          [ "$STATUS" = "completed" ] && break
+          sleep 15
+        done
+        [ "$STATUS" = "completed" ] || fail "argus run $URL did not finish within ${{ inputs.timeout_seconds }}s (last status: $STATUS)."
+
+        echo "observed: $CONCL   expected: ${{ inputs.expect }}"
+        if [ "$CONCL" = "${{ inputs.expect }}" ]; then
+          echo "PASS ${{ inputs.test_id }}: argus run concluded '$CONCL' as expected"
+          echo "status=pass" >> "$GITHUB_OUTPUT"
+        else
+          fail "${{ inputs.test_id }}: argus run concluded '$CONCL', expected '${{ inputs.expect }}' -- $URL"
+        fi

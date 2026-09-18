@@ -1,0 +1,87 @@
+name: "argus run (dispatch target)"
+run-name: "argus ${{ inputs.marker }}"
+
+# ============================================================================
+# Dispatch target: one argus invocation, in its own run.
+#
+# WHY THIS EXISTS
+# ---------------
+# Calling container-scan.yml with `uses:` pulls argus's whole job graph into
+# the caller's run, so argus's Discover / Build & Scan / Scan Remote Image /
+# Container Scan Summary jobs all surface as checks on our pull requests. That
+# has two consequences a test suite should not accept:
+#
+#   - A test that asserts argus BLOCKS needs argus to exit non-zero, and that
+#     exit renders red on the PR. Red then means "the test passed", which no
+#     reader can be expected to know.
+#   - argus branches internally on scan_mode, so every test contributes two or
+#     three skipped jobs that say nothing about the test. 81 tests produced 298
+#     checks, 127 of them skips.
+#
+# A workflow_dispatch run does NOT create check runs on a pull request --
+# verified on the exact SHA of PR #17, which reported no checks. So a test can
+# dispatch this, wait, read the conclusion, and assert on it. The test job is
+# then green exactly when its assertion holds, and argus's jobs stay in their
+# own run.
+#
+# `marker` is echoed into run-name because the dispatch API returns no run id;
+# the caller finds its child by matching this string.
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      marker:
+        description: 'Unique token so the dispatching job can find this run'
+        required: true
+        type: string
+      scan_mode:
+        required: false
+        type: string
+        default: 'remote'
+      image_ref:
+        required: false
+        type: string
+        default: ''
+      container_name:
+        required: false
+        type: string
+        default: ''
+      registry_username:
+        required: false
+        type: string
+        default: ''
+      scanners:
+        required: false
+        type: string
+        default: 'trivy,grype,syft'
+      fail_on_severity:
+        required: false
+        type: string
+        default: 'none'
+      allow_failure:
+        required: false
+        type: boolean
+        default: false
+
+# Must be a superset of what container-scan.yml declares, or the call fails at
+# startup with no jobs and no annotation. argus requires pull-requests: write.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  packages: read
+  pull-requests: write
+
+jobs:
+  scan:
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
+    with:
+      scan_mode: ${{ inputs.scan_mode }}
+      image_ref: ${{ inputs.image_ref }}
+      container_name: ${{ inputs.container_name }}
+      registry_username: ${{ inputs.registry_username }}
+      scanners: ${{ inputs.scanners }}
+      fail_on_severity: ${{ inputs.fail_on_severity }}
+      allow_failure: ${{ inputs.allow_failure }}
+      post_pr_comment: false
