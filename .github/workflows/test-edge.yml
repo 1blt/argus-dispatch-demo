@@ -217,7 +217,8 @@ jobs:
             *)       E12_STATUS=FAIL ;;
           esac
           RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json --arg e12 "$E12_STATUS" '
-            ( [ .[] | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
+            # Filter by id rather than trusting the artifact glob -- see remote.
+            ( [ .[] | select(.id | test("^E[0-9]+$")) | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
               + [ { id: "E12", name: $d[0]["E12"][0], detail: $d[0]["E12"][1], status: $e12 } ] )
             | sort_by(.id | ltrimstr("E") | tonumber)
           ' ./results/result-*.json)

@@ -201,7 +201,7 @@ jobs:
       - name: Download every test result
         uses: actions/download-artifact@v4
         with:
-          pattern: testresult-*
+          pattern: testresult-R*
           path: ./results
           merge-multiple: true
 
@@ -236,7 +236,11 @@ jobs:
           esac
 
           RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json --arg r12 "$R12_STATUS" '
-            [ .[] | {
+            # Filter by id rather than trusting the artifact glob. All suites share
+            # one workflow run, so a broad pattern pulls in other suites' results
+            # and tonumber then dies on a foreign id -- which is exactly how this
+            # failed: pattern was testresult-* and it swallowed C, D and E.
+            [ .[] | select(.id | test("^R[0-9]+$")) | {
                 id: .id,
                 name: ($d[0][.id][0] // .id),
                 detail: ($d[0][.id][1] // ""),
