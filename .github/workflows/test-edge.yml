@@ -2,6 +2,11 @@ name: "Edge & Adversarial Tests"
 
 on:
   workflow_call:
+    inputs:
+      max_parallel:
+        required: false
+        type: number
+        default: 4
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -15,18 +20,20 @@ permissions:
   pull-requests: write
 
 # ============================================================================
-# Edge and adversarial coverage, dispatch architecture.
+# Edge and adversarial coverage: matrix over a parameter table.
 #
-# Each test dispatches argus-run.yml and asserts the child run's conclusion, so
-# the job is green exactly when its assertion holds.
+# E5, E8 and E9 assert argus FAILS, so they are green when it does. E5 and E9
+# are the open findings -- argus reports success having scanned nothing -- so
+# they are expected RED, and that red is real rather than an artifact of how
+# the test is wired.
 #
-# E5, E8 and E9 assert argus FAILS. E5 and E9 are the open findings: argus
-# reports success having scanned nothing, so they are expected to be RED, and
-# that red is real rather than an artifact of how the test is wired.
+# Two entries carry deliberately hostile values and must stay exactly as
+# written: E3's scanner list has padding, mixed case and a repeat; E7's
+# container name has a slash and a space. Tidying either would delete the test.
 #
-# Two jobs are not argus calls: E1a resolves a digest for E1 to pin, and E12
-# asserts on the content of E2's scan report. E12 now fetches that artifact
-# from the run E2 dispatched.
+# Two jobs are not matrix entries: E1a resolves a digest for E1 to pin, and E12
+# asserts on the CONTENT of E2's scan report, which now lives in the run E2
+# dispatched.
 # ============================================================================
 
 jobs:
@@ -61,473 +68,159 @@ jobs:
           echo "Resolved nginx:1.19.0 -> $DIGEST"
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
-  e1-digest-pinned:
-    name: "E1: digest-pinned image"
+  edge:
+    name: "${{ matrix.t.id }}: ${{ matrix.t.name }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     needs: e1-resolve-digest
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel || 4 }}
+      matrix:
+        t:
+          - { id: E1,  name: "digest-pinned image",        expect: success, image: "nginx@${{ needs.e1-resolve-digest.outputs.digest }}", cname: "e1-digest-pinned",    scanners: "trivy",              sev: none, user: "" }
+          - { id: E2,  name: "fully-qualified host",       expect: success, image: "docker.io/library/alpine:3.18",             cname: "e2-fq-alpine",        scanners: "trivy,grype",        sev: none, user: "" }
+          - { id: E3,  name: "messy scanners normalise",   expect: success, image: "gcr.io/distroless/static-debian12:latest",  cname: "e3-normalisation",    scanners: "trivy , TRIVY ,grype,  Trivy", sev: none, user: "" }
+          - { id: E5,  name: "no valid scanner (policy)",  expect: failure, image: "gcr.io/distroless/static-debian12:latest",  cname: "e5-no-valid-scanner", scanners: "bogusscanner",       sev: none, user: "" }
+          - { id: E6,  name: "valid + typo'd scanner",     expect: success, image: "gcr.io/distroless/static-debian12:latest",  cname: "e6-partial-typo",     scanners: "trivy,bogusscanner", sev: none, user: "" }
+          - { id: E7,  name: "container_name sanitisation", expect: success, image: "gcr.io/distroless/static-debian12:latest", cname: "Edge/Case Name",      scanners: "trivy",              sev: none, user: "" }
+          - { id: E8,  name: "auth without password",      expect: failure, image: "gcr.io/distroless/static-debian12:latest",  cname: "e8-auth-no-password", scanners: "trivy",              sev: none, user: "notarealuser" }
+          - { id: E9,  name: "empty image_ref (policy)",   expect: failure, image: "",                                         cname: "e9-empty-image-ref",  scanners: "trivy",              sev: none, user: "" }
+          - { id: E10, name: "packageless image",          expect: success, image: "hello-world:latest",                       cname: "e10-packageless",     scanners: "trivy,grype",        sev: low,  user: "" }
+          - { id: E11, name: "SARIF upload, zero findings", expect: success, image: "gcr.io/distroless/static-debian12:latest", cname: "e11-sarif-empty",     scanners: "trivy",              sev: none, user: "" }
+          - { id: E13, name: "foreign-architecture image", expect: success, image: "arm64v8/alpine:3.18",                       cname: "e13-arm64-alpine",    scanners: "trivy",              sev: none, user: "" }
+          - { id: E14, name: "SARIF upload at scale",      expect: success, image: "nginx:1.19.0",                             cname: "e14-sarif-scale",     scanners: "trivy,grype",        sev: none, user: "" }
     steps:
       - uses: actions/checkout@v4
       - id: t
         uses: ./.github/actions/argus-scan
         with:
-          test_id: E1
-          expect: success
+          test_id: ${{ matrix.t.id }}
+          expect: ${{ matrix.t.expect }}
           scan_mode: remote
-          image_ref: nginx@${{ needs.e1-resolve-digest.outputs.digest }}
-          container_name: e1-digest-pinned
-          scanners: trivy
-          fail_on_severity: none
+          image_ref: ${{ matrix.t.image }}
+          container_name: ${{ matrix.t.cname }}
+          registry_username: ${{ matrix.t.user }}
+          scanners: ${{ matrix.t.scanners }}
+          fail_on_severity: ${{ matrix.t.sev }}
           allow_failure: 'false'
-
-  e2-fully-qualified:
-    name: "E2: fully-qualified registry host"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
+      - name: Record result
+        if: always()
+        run: |
+          jq -n -c --arg id "${{ matrix.t.id }}" \
+                   --arg status "${{ steps.t.outputs.status || 'FAIL' }}" \
+                   --arg child "${{ steps.t.outputs.child_run_id }}" \
+                   '{id:$id, status:$status, child:$child}' > "result-${{ matrix.t.id }}.json"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          test_id: E2
-          expect: success
-          scan_mode: remote
-          image_ref: docker.io/library/alpine:3.18
-          container_name: e2-fq-alpine
-          scanners: trivy,grype
-          fail_on_severity: none
-          allow_failure: 'false'
+          name: testresult-${{ matrix.t.id }}
+          path: result-${{ matrix.t.id }}.json
+          retention-days: 7
+          if-no-files-found: error
 
-  e3-scanner-normalisation:
-    name: "E3: messy scanners list normalises"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E3
-          expect: success
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: e3-normalisation
-          scanners:   trivy , TRIVY ,grype,  Trivy  
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e5-no-valid-scanner:
-    name: "E5: no valid scanner (policy)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E5
-          expect: failure
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: e5-no-valid-scanner
-          scanners: bogusscanner
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e6-partial-typo:
-    name: "E6: valid + typo'd scanner"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E6
-          expect: success
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: e6-partial-typo
-          scanners: trivy,bogusscanner
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e7-name-sanitisation:
-    name: "E7: container_name sanitisation"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E7
-          expect: success
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: Edge/Case Name
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e8-auth-missing-password:
-    name: "E8: registry auth without password"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E8
-          expect: failure
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: e8-auth-no-password
-          registry_username: notarealuser
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e9-empty-image-ref:
-    name: "E9: empty image_ref (policy)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E9
-          expect: failure
-          scan_mode: remote
-          image_ref: ''
-          container_name: e9-empty-image-ref
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e10-packageless-image:
-    name: "E10: packageless image"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E10
-          expect: success
-          scan_mode: remote
-          image_ref: hello-world:latest
-          container_name: e10-packageless
-          scanners: trivy,grype
-          fail_on_severity: low
-          allow_failure: 'false'
-
-  e11-sarif-empty:
-    name: "E11: SARIF upload, zero findings"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E11
-          expect: success
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: e11-sarif-empty
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e13-foreign-arch:
-    name: "E13: foreign-architecture image"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E13
-          expect: success
-          scan_mode: remote
-          image_ref: arm64v8/alpine:3.18
-          container_name: e13-arm64-alpine
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  e14-sarif-at-scale:
-    name: "E14: SARIF upload at scale"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: E14
-          expect: success
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: e14-sarif-scale
-          scanners: trivy,grype
-          fail_on_severity: none
-          allow_failure: 'false'
-
+  # --------------------------------------------------------------------------
+  # E12: assert the scan actually ran against the requested image.
+  #
+  # E2's report lives in the run E2 dispatched, so this reads E2's result
+  # artifact for that child run id and pulls the report from it.
+  # --------------------------------------------------------------------------
   e12-artifact-assertion:
     name: "E12: scan artifact content"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: e2-fully-qualified
+    needs: edge
     if: always()
-    outputs:
-      status: ${{ steps.assert.outputs.status }}
     steps:
-      # E2's artifact now lives in the child run E2 dispatched, so this fetches
-      # it by that run's id rather than from this run.
-      - name: Download E2 container summary from the child run
+      - name: Get E2's child run id
+        uses: actions/download-artifact@v4
+        with:
+          name: testresult-E2
+          path: ./e2-result
+
+      - name: Download E2's scan report from that child run
         id: download
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          CHILD="${{ needs.e2-fully-qualified.outputs.child }}"
-          [ -n "$CHILD" ] || { echo "::error::no child run id from E2"; exit 1; }
+          CHILD=$(jq -r '.child' ./e2-result/result-E2.json)
+          [ -n "$CHILD" ] && [ "$CHILD" != "null" ] || { echo "::error::E2 recorded no child run id"; exit 1; }
+          echo "E2 child run: $CHILD"
           mkdir -p ./e2-summary
           gh run download "$CHILD" -n scanner-summary-container-e2-fq-alpine -D ./e2-summary
 
-      - name: Assert the scan actually ran against the requested image
-        id: assert
+      - name: Assert the scan ran against the requested image
         run: |
           set -uo pipefail
           STATUS="pass"
-
-          fail() {
-            echo "::error::$1"
-            STATUS="FAIL"
-          }
+          fail() { echo "::error::$1"; STATUS="FAIL"; }
 
           if [ "${{ steps.download.outcome }}" != "success" ]; then
-            fail "E2 uploaded no scanner-summary-container-e2-fq-alpine artifact — the scan produced no report"
+            fail "E2 uploaded no scanner-summary-container-e2-fq-alpine artifact -- the scan produced no report"
           else
             REPORT=$(find ./e2-summary -type f -name '*.md' | head -n 1)
-
-            if [ -z "$REPORT" ]; then
-              fail "Artifact downloaded but contains no markdown report"
-            elif [ ! -s "$REPORT" ]; then
-              fail "Report $REPORT is empty"
+            if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+              fail "E2 artifact holds no readable markdown report"
             else
-              echo "Report: $REPORT ($(wc -c < "$REPORT") bytes)"
-              echo "----- report -----"
-              cat "$REPORT"
-              echo "------------------"
-
-              # The report embeds the image it scanned. If this stops matching,
-              # the workflow scanned something other than what it was asked to.
-              if ! grep -qi 'alpine' "$REPORT"; then
-                fail "Report does not mention the scanned image (alpine) — check whether the report format changed before loosening this"
+              echo "----- report -----"; head -40 "$REPORT"; echo "------------------"
+              # The fully-qualified ref must survive into the report, or the
+              # scan ran against something other than what was asked for.
+              if ! grep -qE 'alpine:3\.18' "$REPORT"; then
+                fail "E2's report never names alpine:3.18 -- the scan did not run against the requested image"
               fi
             fi
           fi
-
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           [ "$STATUS" = "pass" ] || exit 1
-
-  # --------------------------------------------------------------------------
-  # Validation job
-  # --------------------------------------------------------------------------
 
   validate-results:
     name: "Validate Edge Test Results"
     runs-on: ubuntu-latest
+    needs: [edge, e12-artifact-assertion]
+    if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
-    needs:
-      - e1-digest-pinned
-      - e2-fully-qualified
-      - e3-scanner-normalisation
-      - e5-no-valid-scanner
-      - e6-partial-typo
-      - e7-name-sanitisation
-      - e8-auth-missing-password
-      - e9-empty-image-ref
-      - e10-packageless-image
-      - e11-sarif-empty
-      - e12-artifact-assertion
-      - e13-foreign-arch
-      - e14-sarif-at-scale
-    if: always()
     steps:
-      - name: Validate test outcomes
-        env:
-          E1: ${{ needs.e1-digest-pinned.result }}
-          E2: ${{ needs.e2-fully-qualified.result }}
-          E3: ${{ needs.e3-scanner-normalisation.result }}
-          E5: ${{ needs.e5-no-valid-scanner.result }}
-          E6: ${{ needs.e6-partial-typo.result }}
-          E7: ${{ needs.e7-name-sanitisation.result }}
-          E8: ${{ needs.e8-auth-missing-password.result }}
-          E9: ${{ needs.e9-empty-image-ref.result }}
-          E10: ${{ needs.e10-packageless-image.result }}
-          E11: ${{ needs.e11-sarif-empty.result }}
-          E12: ${{ needs.e12-artifact-assertion.result }}
-          E13: ${{ needs.e13-foreign-arch.result }}
-          E14: ${{ needs.e14-sarif-at-scale.result }}
-        run: |
-          FAILURES=0
-
-          check() {
-            local name="$1" got="$2" expected="$3"
-            if [ "$got" = "$expected" ]; then
-              echo "PASS $name: $got (expected $expected)"
-            else
-              echo "FAIL $name: $got (expected $expected)"
-              FAILURES=$((FAILURES + 1))
-            fi
-          }
-
-          echo "============================================"
-          echo "Edge & Adversarial Test Validation"
-          echo "============================================"
-          echo ""
-
-          echo "-- CONTRACT: input handling --"
-          check "E1  digest-pinned image" "$E1" "success"
-          check "E2  fully-qualified host" "$E2" "success"
-          check "E3  messy scanners list normalises" "$E3" "success"
-          check "E6  valid + typo'd scanner" "$E6" "success"
-          check "E7  container_name sanitisation" "$E7" "success"
-          echo ""
-
-          echo "-- CONTRACT: documented failure path --"
-          check "E8  auth without password" "$E8" "success"
-          echo ""
-
-          echo "-- CONTRACT: scanner robustness --"
-          check "E10 packageless image" "$E10" "success"
-          check "E11 SARIF upload, zero findings" "$E11" "success"
-          check "E12 scan artifact content" "$E12" "success"
-          check "E13 foreign-architecture image" "$E13" "success"
-          check "E14 SARIF upload at scale" "$E14" "success"
-          echo ""
-
-          echo "-- POLICY: silent-pass holes (a red here is an argus question) --"
-          check "E5  no valid scanner" "$E5" "success"
-          check "E9  empty image_ref" "$E9" "success"
-
-          echo ""
-          echo "============================================"
-          TOTAL=13
-          PASSED=$((TOTAL - FAILURES))
-          echo "Results: $PASSED/$TOTAL passed"
-          echo "============================================"
-
-          if [ "$FAILURES" -gt 0 ]; then
-            echo "::error::$FAILURES edge test(s) did not produce expected outcome"
-            exit 1
-          fi
-
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: testresult-E*
+          path: ./results
+          merge-multiple: true
       - name: Build results JSON
         id: collect
-        if: always()
         env:
-          E1: ${{ needs.e1-digest-pinned.result }}
-          E2: ${{ needs.e2-fully-qualified.result }}
-          E3: ${{ needs.e3-scanner-normalisation.result }}
-          E5: ${{ needs.e5-no-valid-scanner.result }}
-          E6: ${{ needs.e6-partial-typo.result }}
-          E7: ${{ needs.e7-name-sanitisation.result }}
-          E8: ${{ needs.e8-auth-missing-password.result }}
-          E9: ${{ needs.e9-empty-image-ref.result }}
-          E10: ${{ needs.e10-packageless-image.result }}
-          E11: ${{ needs.e11-sarif-empty.result }}
           E12: ${{ needs.e12-artifact-assertion.result }}
-          E13: ${{ needs.e13-foreign-arch.result }}
-          E14: ${{ needs.e14-sarif-at-scale.result }}
         run: |
-          to_status() {
-            local got="$1" expected="$2"
-            case "$got" in
-              skipped) echo "skip" ;;
-              cancelled) echo "cancel" ;;
-              *)
-                if [ "$got" = "$expected" ]; then
-                  echo "pass"
-                else
-                  echo "FAIL"
-                fi
-                ;;
-            esac
+          set -uo pipefail
+          cat > /tmp/detail.json <<'JSON'
+          {
+            "E1":  ["digest-pinned image","Does argus scan an image pinned by digest rather than tag?"],
+            "E2":  ["fully-qualified host","Does argus scan an image whose reference names the registry host explicitly?"],
+            "E3":  ["messy scanners list normalises","Does argus normalise a scanner list carrying padding, mixed case and a repeat?"],
+            "E5":  ["no valid scanner","Does argus fail when the scanners input names nothing it recognises?"],
+            "E6":  ["valid + typo'd scanner","Does argus still scan when one scanner name is valid and the other is a typo?"],
+            "E7":  ["container_name sanitisation","Does argus accept a container_name containing a slash and a space?"],
+            "E8":  ["auth without password","Does argus fail when a registry username is supplied with no password?"],
+            "E9":  ["empty image_ref","Does argus fail when scan_mode is remote and image_ref is empty?"],
+            "E10": ["packageless image","Does argus complete a scan of an image with no package manager database?"],
+            "E11": ["SARIF upload, zero findings","Does argus upload a SARIF report when the scan finds nothing?"],
+            "E12": ["scan artifact content","Does the scan report actually name the image that was requested?"],
+            "E13": ["foreign-architecture image","Does argus scan an arm64-only image from an amd64 runner?"],
+            "E14": ["SARIF upload at scale","Does argus upload a SARIF report for an image with hundreds of findings?"]
           }
-          RESULTS=$(jq -n -c \
-            --arg e1 "$(to_status "$E1" success)" \
-            --arg e2 "$(to_status "$E2" success)" \
-            --arg e3 "$(to_status "$E3" success)" \
-            --arg e5 "$(to_status "$E5" failure)" \
-            --arg e6 "$(to_status "$E6" success)" \
-            --arg e7 "$(to_status "$E7" success)" \
-            --arg e8 "$(to_status "$E8" failure)" \
-            --arg e9 "$(to_status "$E9" failure)" \
-            --arg e10 "$(to_status "$E10" success)" \
-            --arg e11 "$(to_status "$E11" success)" \
-            --arg e12 "$(to_status "$E12" success)" \
-            --arg e13 "$(to_status "$E13" success)" \
-            --arg e14 "$(to_status "$E14" success)" \
-            '[
-              {"id":"E1","name":"digest-pinned image","detail":"Does argus scan an image that is referenced by digest rather than by tag?","status":$e1},
-              {"id":"E2","name":"fully-qualified host","detail":"Does argus scan an image that is referenced by a fully-qualified registry host?","status":$e2},
-              {"id":"E3","name":"whitespace in scanners","detail":"Does argus accept a scanners list that is padded, mixed case, and repeats a scanner?","status":$e3},
-              {"id":"E5","name":"no valid scanner","detail":"Does argus fail the workflow when the scanners list names nothing it recognises, so no scanner runs?","status":$e5},
-              {"id":"E6","name":"valid plus unknown scanner","detail":"Does argus still run trivy when the scanners list also contains a name it does not recognise?","status":$e6},
-              {"id":"E7","name":"container_name sanitisation","detail":"Does argus complete a scan when container_name contains a slash, a space and capital letters?","status":$e7},
-              {"id":"E8","name":"auth without password","detail":"Does argus fail the workflow when registry_username is set but the registry_password secret is missing?","status":$e8},
-              {"id":"E9","name":"empty image_ref","detail":"Does argus fail the workflow when a remote scan is asked for with an empty image_ref, so every scan job skips?","status":$e9},
-              {"id":"E10","name":"packageless image","detail":"Does argus scan an image that has no package manager database without crashing?","status":$e10},
-              {"id":"E11","name":"SARIF upload, zero findings","detail":"Does argus upload SARIF successfully when the scan produced zero findings?","status":$e11},
-              {"id":"E12","name":"scan artifact content","detail":"Does the uploaded scan report show that the scan really ran against the image it was given?","status":$e12},
-              {"id":"E13","name":"foreign-architecture image","detail":"Does argus scan an arm64-only image from an amd64 runner?","status":$e13},
-              {"id":"E14","name":"SARIF upload at scale","detail":"Does argus upload SARIF successfully when a very vulnerable image produces a large result set?","status":$e14}
-            ]')
+          JSON
+          case "$E12" in
+            success) E12_STATUS=pass ;;
+            skipped) E12_STATUS=skip ;;
+            *)       E12_STATUS=FAIL ;;
+          esac
+          RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json --arg e12 "$E12_STATUS" '
+            ( [ .[] | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
+              + [ { id: "E12", name: $d[0]["E12"][0], detail: $d[0]["E12"][1], status: $e12 } ] )
+            | sort_by(.id | ltrimstr("E") | tonumber)
+          ' ./results/result-*.json)
+          echo "$RESULTS" | jq -e 'length > 0' >/dev/null || { echo "::error::no edge results collected"; exit 1; }
+          echo "collected $(echo "$RESULTS" | jq 'length') results"
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

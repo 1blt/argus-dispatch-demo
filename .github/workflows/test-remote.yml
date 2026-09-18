@@ -7,7 +7,7 @@ on:
         description: "How many tests may run at once"
         required: false
         type: number
-        default: 6
+        default: 4
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -61,7 +61,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.max_parallel || 6 }}
+      max-parallel: ${{ inputs.max_parallel || 4 }}
       matrix:
         t:
           - { id: R1,  name: "vuln + all scanners",          expect: success, image: "nginx:1.19.0",                              cname: r1-nginx-vuln,        scanners: "trivy,grype,syft", sev: none,     allow: 'false' }

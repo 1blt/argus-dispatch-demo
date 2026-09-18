@@ -2,6 +2,11 @@ name: "Combination Tests"
 
 on:
   workflow_call:
+    inputs:
+      max_parallel:
+        required: false
+        type: number
+        default: 4
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -15,307 +20,105 @@ permissions:
   pull-requests: write
 
 # ============================================================================
-# Scanner x threshold combinations, dispatch architecture.
+# Scanner x threshold combinations: matrix over a parameter table.
 #
-# Each test dispatches argus-run.yml and asserts the child run's conclusion, so
-# the job is green exactly when its assertion holds. C3-C6 are the severity
-# ladder and assert argus FAILS; they are green when it does.
+# C3-C6 are the severity ladder and assert argus FAILS; they are green when it
+# does. The ladder looks redundant and is not -- each threshold level has to be
+# shown to enforce independently, or a gate honouring only one of them passes
+# every test.
 #
-# The ladder looks redundant and is not: each threshold level has to be shown
-# to enforce independently, or a gate that only honours one of them passes.
+# max-parallel defaults to 4 rather than 6. GitHub has no cross-workflow
+# concurrency bound, so each suite's limit is independent and they add up: with
+# every suite at 6 the total is still ~24 parents plus 24 children. Keeping the
+# per-suite numbers low is the only lever available.
 # ============================================================================
 
 jobs:
-  c1-trivy-syft:
-    name: "C1: trivy+syft pair"
+  combination:
+    name: "${{ matrix.t.id }}: ${{ matrix.t.name }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel || 4 }}
+      matrix:
+        t:
+          - { id: C1,  name: "trivy+syft pair",            expect: success, mode: remote,   image: "nginx:1.19.0",                            cname: c1-trivy-syft,      scanners: "trivy,syft",       sev: none,     allow: 'false' }
+          - { id: C2,  name: "grype+syft pair",            expect: success, mode: remote,   image: "nginx:1.19.0",                            cname: c2-grype-syft,      scanners: "grype,syft",       sev: none,     allow: 'false' }
+          - { id: C3,  name: "medium threshold on vuln",   expect: failure, mode: remote,   image: "nginx:1.19.0",                            cname: c3-medium-vuln,     scanners: "trivy",            sev: medium,   allow: 'false' }
+          - { id: C4,  name: "high threshold on vuln",     expect: failure, mode: remote,   image: "nginx:1.19.0",                            cname: c4-high-vuln,       scanners: "grype",            sev: high,     allow: 'false' }
+          - { id: C5,  name: "grype + critical threshold", expect: failure, mode: remote,   image: "nginx:1.19.0",                            cname: c5-grype-critical,  scanners: "grype",            sev: critical, allow: 'false' }
+          - { id: C6,  name: "low threshold on vuln",      expect: failure, mode: remote,   image: "nginx:1.19.0",                            cname: c6-low-vuln,        scanners: "trivy",            sev: low,      allow: 'false' }
+          - { id: C7,  name: "syft + critical on vuln",    expect: success, mode: remote,   image: "nginx:1.19.0",                            cname: c7-syft-critical,   scanners: "syft",             sev: critical, allow: 'false' }
+          - { id: C8,  name: "allow_failure + multi",      expect: success, mode: remote,   image: "nginx:1.19.0",                            cname: c8-allow-multi,     scanners: "trivy,grype",      sev: critical, allow: 'true'  }
+          - { id: C9,  name: "allow_failure + clean",      expect: success, mode: remote,   image: "gcr.io/distroless/static-debian12:latest", cname: c9-allow-grype-clean, scanners: "grype",          sev: low,      allow: 'true'  }
+          - { id: C10, name: "discover + allow_failure",   expect: success, mode: discover, image: "",                                        cname: "",                 scanners: "trivy",            sev: medium,   allow: 'true'  }
+          - { id: C14, name: "all scanners + high",        expect: success, mode: remote,   image: "alpine:3.18",                             cname: c14-all-high-alpine, scanners: "trivy,grype,syft", sev: high,    allow: 'true'  }
     steps:
       - uses: actions/checkout@v4
       - id: t
         uses: ./.github/actions/argus-scan
         with:
-          test_id: C1
-          expect: success
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c1-trivy-syft
-          scanners: trivy,syft
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  c2-grype-syft:
-    name: "C2: grype+syft pair"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
+          test_id: ${{ matrix.t.id }}
+          expect: ${{ matrix.t.expect }}
+          scan_mode: ${{ matrix.t.mode }}
+          image_ref: ${{ matrix.t.image }}
+          container_name: ${{ matrix.t.cname }}
+          scanners: ${{ matrix.t.scanners }}
+          fail_on_severity: ${{ matrix.t.sev }}
+          allow_failure: ${{ matrix.t.allow }}
+      - name: Record result
+        if: always()
+        run: |
+          jq -n -c --arg id "${{ matrix.t.id }}" \
+                   --arg status "${{ steps.t.outputs.status || 'FAIL' }}" \
+                   --arg child "${{ steps.t.outputs.child_run_id }}" \
+                   '{id:$id, status:$status, child:$child}' > "result-${{ matrix.t.id }}.json"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          test_id: C2
-          expect: success
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c2-grype-syft
-          scanners: grype,syft
-          fail_on_severity: none
-          allow_failure: 'false'
-
-  c3-medium-vuln:
-    name: "C3: medium threshold on vuln"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C3
-          expect: failure
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c3-medium-vuln
-          scanners: trivy
-          fail_on_severity: medium
-          allow_failure: 'false'
-
-  c4-high-vuln:
-    name: "C4: high threshold on vuln"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C4
-          expect: failure
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c4-high-vuln
-          scanners: grype
-          fail_on_severity: high
-          allow_failure: 'false'
-
-  c5-grype-critical:
-    name: "C5: grype + critical threshold"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C5
-          expect: failure
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c5-grype-critical
-          scanners: grype
-          fail_on_severity: critical
-          allow_failure: 'false'
-
-  c6-low-vuln:
-    name: "C6: low threshold on vuln"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C6
-          expect: failure
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c6-low-vuln
-          scanners: trivy
-          fail_on_severity: low
-          allow_failure: 'false'
-
-  c7-syft-critical-vuln:
-    name: "C7: syft + critical on vuln"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C7
-          expect: success
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c7-syft-critical
-          scanners: syft
-          fail_on_severity: critical
-          allow_failure: 'false'
-
-  c8-allow-multi-scanner:
-    name: "C8: allow_failure + multi-scanner"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C8
-          expect: success
-          scan_mode: remote
-          image_ref: nginx:1.19.0
-          container_name: c8-allow-multi
-          scanners: trivy,grype
-          fail_on_severity: critical
-          allow_failure: 'true'
-
-  c9-allow-grype-clean:
-    name: "C9: allow_failure + grype + clean"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C9
-          expect: success
-          scan_mode: remote
-          image_ref: gcr.io/distroless/static-debian12:latest
-          container_name: c9-allow-grype-clean
-          scanners: grype
-          fail_on_severity: low
-          allow_failure: 'true'
-
-  c10-discover-allow:
-    name: "C10: discover + allow_failure"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C10
-          expect: success
-          scan_mode: discover
-          scanners: trivy
-          fail_on_severity: medium
-          allow_failure: 'true'
-
-  c14-all-high-alpine:
-    name: "C14: all scanners + high + allow_failure"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: C14
-          expect: success
-          scan_mode: remote
-          image_ref: alpine:3.18
-          container_name: c14-all-high-alpine
-          scanners: trivy,grype,syft
-          fail_on_severity: high
-          allow_failure: 'true'
-
+          name: testresult-${{ matrix.t.id }}
+          path: result-${{ matrix.t.id }}.json
+          retention-days: 7
+          if-no-files-found: error
 
   validate-results:
     name: "Validate Combination Test Results"
     runs-on: ubuntu-latest
+    needs: combination
+    if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
-    needs:
-      - c1-trivy-syft
-      - c2-grype-syft
-      - c3-medium-vuln
-      - c4-high-vuln
-      - c5-grype-critical
-      - c6-low-vuln
-      - c7-syft-critical-vuln
-      - c8-allow-multi-scanner
-      - c9-allow-grype-clean
-      - c10-discover-allow
-      - c14-all-high-alpine
-    if: always()
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: testresult-C*
+          path: ./results
+          merge-multiple: true
       - name: Build results JSON
         id: collect
-        env:
-          C1: ${{ needs.c1-trivy-syft.result }}
-          C2: ${{ needs.c2-grype-syft.result }}
-          C3: ${{ needs.c3-medium-vuln.result }}
-          C4: ${{ needs.c4-high-vuln.result }}
-          C5: ${{ needs.c5-grype-critical.result }}
-          C6: ${{ needs.c6-low-vuln.result }}
-          C7: ${{ needs.c7-syft-critical-vuln.result }}
-          C8: ${{ needs.c8-allow-multi-scanner.result }}
-          C9: ${{ needs.c9-allow-grype-clean.result }}
-          C10: ${{ needs.c10-discover-allow.result }}
-          C14: ${{ needs.c14-all-high-alpine.result }}
         run: |
-          to_status() {
-            case "$1" in
-              success) echo "pass" ;;
-              skipped) echo "skip" ;;
-              cancelled) echo "cancel" ;;
-              *) echo "FAIL" ;;
-            esac
+          set -uo pipefail
+          cat > /tmp/detail.json <<'JSON'
+          {
+            "C1":  ["trivy+syft pair","Does argus complete a scan when trivy and syft run together?"],
+            "C2":  ["grype+syft pair","Does argus complete a scan when grype and syft run together?"],
+            "C3":  ["medium threshold on vuln","Does argus fail the workflow when nginx:1.19.0 breaches the medium threshold and allow_failure is false?"],
+            "C4":  ["high threshold on vuln","Does argus fail the workflow when nginx:1.19.0 breaches the high threshold and allow_failure is false?"],
+            "C5":  ["grype + critical threshold","Does argus fail the workflow when grype alone finds criticals in nginx:1.19.0 and allow_failure is false?"],
+            "C6":  ["low threshold on vuln","Does argus fail the workflow when nginx:1.19.0 breaches the lowest threshold and allow_failure is false?"],
+            "C7":  ["syft + critical on vuln","Does argus let a syft-only scan of nginx:1.19.0 pass at the critical threshold, since an SBOM gives the gate nothing to act on?"],
+            "C8":  ["allow_failure + multi-scanner","Does argus let a trivy and grype scan that breaches the critical threshold pass when allow_failure is true?"],
+            "C9":  ["allow_failure + grype + clean","Does argus let a grype scan of the clean distroless image pass at the low threshold when allow_failure is true?"],
+            "C10": ["discover + allow_failure","Does argus complete a discover run at the medium threshold when allow_failure is true?"],
+            "C14": ["all scanners + high + allow","Does argus let an all-scanner scan of alpine:3.18 pass at the high threshold when allow_failure is true?"]
           }
-          RESULTS=$(jq -n -c \
-            --arg c1 "$(to_status "$C1")"   --arg c2 "$(to_status "$C2")" \
-            --arg c3 "$(to_status "$C3")"   --arg c4 "$(to_status "$C4")" \
-            --arg c5 "$(to_status "$C5")"   --arg c6 "$(to_status "$C6")" \
-            --arg c7 "$(to_status "$C7")"   --arg c8 "$(to_status "$C8")" \
-            --arg c9 "$(to_status "$C9")"   --arg c10 "$(to_status "$C10")" \
-            --arg c14 "$(to_status "$C14")" \
-            '[
-              {"id":"C1","name":"trivy+syft pair","detail":"Does argus complete a scan when trivy and syft run together?","status":$c1},
-              {"id":"C2","name":"grype+syft pair","detail":"Does argus complete a scan when grype and syft run together?","status":$c2},
-              {"id":"C3","name":"medium threshold on vuln","detail":"Does argus fail the workflow when nginx:1.19.0 breaches the medium threshold and allow_failure is false?","status":$c3},
-              {"id":"C4","name":"high threshold on vuln","detail":"Does argus fail the workflow when nginx:1.19.0 breaches the high threshold and allow_failure is false?","status":$c4},
-              {"id":"C5","name":"grype + critical threshold","detail":"Does argus fail the workflow when grype alone finds criticals in nginx:1.19.0 and allow_failure is false?","status":$c5},
-              {"id":"C6","name":"low threshold on vuln","detail":"Does argus fail the workflow when nginx:1.19.0 breaches the lowest threshold and allow_failure is false?","status":$c6},
-              {"id":"C7","name":"syft + critical on vuln","detail":"Does argus let a syft-only scan of nginx:1.19.0 pass at the critical threshold, since an SBOM gives the gate nothing to act on?","status":$c7},
-              {"id":"C8","name":"allow_failure + multi-scanner","detail":"Does argus let a trivy and grype scan that breaches the critical threshold pass when allow_failure is true?","status":$c8},
-              {"id":"C9","name":"allow_failure + grype + clean","detail":"Does argus let a grype scan of the clean distroless image pass at the low threshold when allow_failure is true?","status":$c9},
-              {"id":"C10","name":"discover + allow_failure","detail":"Does argus complete a discover run at the medium threshold when allow_failure is true?","status":$c10},
-              {"id":"C14","name":"all scanners + high + allow","detail":"Does argus let an all-scanner scan of alpine:3.18 pass at the high threshold when allow_failure is true?","status":$c14}
-            ]')
+          JSON
+          RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json '
+            [ .[] | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
+            | sort_by(.id | ltrimstr("C") | tonumber)
+          ' ./results/result-*.json)
+          echo "$RESULTS" | jq -e 'length > 0' >/dev/null || { echo "::error::no combination results collected"; exit 1; }
+          echo "collected $(echo "$RESULTS" | jq 'length') results"
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

@@ -15,136 +15,87 @@ permissions:
   pull-requests: write
 
 # ============================================================================
-# Discover mode tests, dispatch architecture.
+# Discover mode tests: matrix over a parameter table, dispatch architecture.
 #
-# Each test dispatches argus-run.yml and asserts the child run's conclusion, so
-# the job is green exactly when its assertion holds. D3 and D4 assert that
-# argus FAILS -- they are green when it does.
+# max-parallel: 1 is load-bearing, not tuning. These previously ran as a needs
+# chain (D2 needs D1, D3 needs D2, D4 needs D3) purely to serialise discover
+# runs, which all build the same Dockerfiles under tests/. The matrix expresses
+# that directly, and drops the `if: always()` D4 needed to survive a
+# deliberately-failing D3 -- under dispatch D3 is green when it passes.
 #
-# D4 keeps `if: always()`. It no longer needs it to survive D3 (D3 is green now
-# when it passes), but it still needs it if D3 genuinely breaks, and the
-# dependency exists only to serialise discover runs.
-#
-# Discover mode builds the Dockerfiles under tests/, so the child run checks
-# out the same ref this workflow runs from.
+# D3 and D4 assert argus FAILS, and are green when it does.
 # ============================================================================
 
 jobs:
-  d1-discover-mixed:
-    name: "D1: discover mixed"
+  discover:
+    name: "${{ matrix.t.id }}: ${{ matrix.t.name }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        t:
+          - { id: D1, name: "discover mixed",           expect: success, scanners: "trivy,grype", sev: none,     allow: 'true'  }
+          - { id: D2, name: "discover trivy only",      expect: success, scanners: "trivy",       sev: none,     allow: 'true'  }
+          - { id: D3, name: "discover fail-closed",     expect: failure, scanners: "trivy,grype", sev: critical, allow: 'false' }
+          - { id: D4, name: "build gate (severity none)", expect: failure, scanners: "trivy",     sev: none,     allow: 'false' }
     steps:
       - uses: actions/checkout@v4
       - id: t
         uses: ./.github/actions/argus-scan
         with:
-          test_id: D1
-          expect: success
+          test_id: ${{ matrix.t.id }}
+          expect: ${{ matrix.t.expect }}
           scan_mode: discover
-          scanners: trivy,grype
-          fail_on_severity: none
-          allow_failure: 'true'
-
-  d2-discover-trivy-only:
-    name: "D2: discover trivy only"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: d1-discover-mixed
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
+          scanners: ${{ matrix.t.scanners }}
+          fail_on_severity: ${{ matrix.t.sev }}
+          allow_failure: ${{ matrix.t.allow }}
+      - name: Record result
+        if: always()
+        run: |
+          jq -n -c --arg id "${{ matrix.t.id }}" \
+                   --arg status "${{ steps.t.outputs.status || 'FAIL' }}" \
+                   --arg child "${{ steps.t.outputs.child_run_id }}" \
+                   '{id:$id, status:$status, child:$child}' > "result-${{ matrix.t.id }}.json"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          test_id: D2
-          expect: success
-          scan_mode: discover
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'true'
-
-  d3-discover-fail-closed:
-    name: "D3: discover fail-closed"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: d2-discover-trivy-only
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: D3
-          expect: failure
-          scan_mode: discover
-          scanners: trivy,grype
-          fail_on_severity: critical
-          allow_failure: 'false'
-
-  d4-build-gate-isolated:
-    name: "D4: build gate (severity=none)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: d3-discover-fail-closed
-    if: always()
-    outputs:
-      status: ${{ steps.t.outputs.status }}
-      child: ${{ steps.t.outputs.child_run_id }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: t
-        uses: ./.github/actions/argus-scan
-        with:
-          test_id: D4
-          expect: failure
-          scan_mode: discover
-          scanners: trivy
-          fail_on_severity: none
-          allow_failure: 'false'
+          name: testresult-${{ matrix.t.id }}
+          path: result-${{ matrix.t.id }}.json
+          retention-days: 7
+          if-no-files-found: error
 
   validate-results:
     name: "Validate Discover Test Results"
     runs-on: ubuntu-latest
+    needs: discover
+    if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
-    needs:
-      - d1-discover-mixed
-      - d2-discover-trivy-only
-      - d3-discover-fail-closed
-      - d4-build-gate-isolated
-    if: always()
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: testresult-D*
+          path: ./results
+          merge-multiple: true
       - name: Build results JSON
         id: collect
-        env:
-          D1: ${{ needs.d1-discover-mixed.result }}
-          D2: ${{ needs.d2-discover-trivy-only.result }}
-          D3: ${{ needs.d3-discover-fail-closed.result }}
-          D4: ${{ needs.d4-build-gate-isolated.result }}
         run: |
-          to_status() {
-            case "$1" in
-              success) echo "pass" ;;
-              skipped) echo "skip" ;;
-              cancelled) echo "cancel" ;;
-              *) echo "FAIL" ;;
-            esac
+          set -uo pipefail
+          cat > /tmp/detail.json <<'JSON'
+          {
+            "D1": ["discover mixed","Does argus complete a discover run over all three Dockerfiles when allow_failure is true?"],
+            "D2": ["discover trivy only","Does argus complete a discover run with trivy as the only scanner when allow_failure is true?"],
+            "D3": ["discover fail-closed","Does argus fail the workflow when a discover run hits both a broken build and criticals with allow_failure false?"],
+            "D4": ["build gate isolated","Does argus fail the workflow when a discovered Dockerfile does not build, even with the severity gate switched off?"]
           }
-          RESULTS=$(jq -n -c \
-            --arg d1 "$(to_status "$D1")" --arg d2 "$(to_status "$D2")" \
-            --arg d3 "$(to_status "$D3")" --arg d4 "$(to_status "$D4")" \
-            '[
-              {"id":"D1","name":"discover mixed","detail":"Does argus complete a discover run over all three Dockerfiles when allow_failure is true?","status":$d1},
-              {"id":"D2","name":"discover trivy only","detail":"Does argus complete a discover run with trivy as the only scanner when allow_failure is true?","status":$d2},
-              {"id":"D3","name":"discover fail-closed","detail":"Does argus fail the workflow when a discover run hits both a broken build and criticals with allow_failure false?","status":$d3},
-              {"id":"D4","name":"build gate isolated","detail":"Does argus fail the workflow when a discovered Dockerfile does not build, even with the severity gate switched off?","status":$d4}
-            ]')
+          JSON
+          RESULTS=$(jq -s -c --slurpfile d /tmp/detail.json '
+            [ .[] | { id: .id, name: ($d[0][.id][0] // .id), detail: ($d[0][.id][1] // ""), status: .status } ]
+            | sort_by(.id | ltrimstr("D") | tonumber)
+          ' ./results/result-*.json)
+          echo "$RESULTS" | jq -e 'length > 0' >/dev/null || { echo "::error::no discover results collected"; exit 1; }
+          echo "collected $(echo "$RESULTS" | jq 'length') results"
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
