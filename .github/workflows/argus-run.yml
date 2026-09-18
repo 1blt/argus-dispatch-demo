@@ -64,11 +64,14 @@ on:
         type: boolean
         default: false
 
+# Must be a superset of what container-scan.yml declares, or the call fails at
+# startup with no jobs and no annotation. argus requires pull-requests: write.
 permissions:
   contents: read
   security-events: write
   actions: read
   packages: read
+  pull-requests: write
 
 jobs:
   scan:
