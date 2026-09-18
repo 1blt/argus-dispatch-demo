@@ -34,6 +34,10 @@ runs:
     - id: run
       shell: bash
       env:
+        # A composite action does not inherit the caller's env, and `gh` needs
+        # both: a token to authenticate, and the repo since there may be no
+        # checkout in the calling job.
+        GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
       run: |
         set -uo pipefail
